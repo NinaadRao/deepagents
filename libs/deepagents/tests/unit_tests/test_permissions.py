@@ -13,8 +13,10 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.permissions import (
     ExecutePermission,
     FilesystemPermission,
+    TaskPermission,
     _check_execute_permission,
     _check_fs_permission,
+    _check_task_permission,
     _filter_paths_by_permission,
     _PermissionMiddleware,
 )
@@ -933,3 +935,173 @@ class TestExecutePermissionMiddleware:
         assert isinstance(result, ToolMessage)
         assert "permission denied" in result.content
         assert result.status == "error"
+
+
+class TestTaskPermission:
+    def test_default_mode_is_allow(self):
+        rule = TaskPermission(subagent_types=["researcher"])
+        assert rule.mode == "allow"
+
+    def test_deny_mode(self):
+        rule = TaskPermission(subagent_types=["privileged_agent"], mode="deny")
+        assert rule.mode == "deny"
+
+    def test_multiple_subagent_types(self):
+        rule = TaskPermission(subagent_types=["researcher", "coder"], mode="allow")
+        assert len(rule.subagent_types) == 2
+
+
+class TestCheckTaskPermission:
+    def test_deny_matching_subagent_type(self):
+        rules = [TaskPermission(subagent_types=["privileged_agent"], mode="deny")]
+        assert _check_task_permission(rules, "privileged_agent") == "deny"
+
+    def test_allow_non_matching_subagent_type(self):
+        rules = [TaskPermission(subagent_types=["privileged_agent"], mode="deny")]
+        assert _check_task_permission(rules, "researcher") == "allow"
+
+    def test_permissive_default_with_no_rules(self):
+        assert _check_task_permission([], "any_agent") == "allow"
+
+    def test_first_match_wins_deny_before_allow(self):
+        rules = [
+            TaskPermission(subagent_types=["privileged_agent"], mode="deny"),
+            TaskPermission(subagent_types=["*"], mode="allow"),
+        ]
+        assert _check_task_permission(rules, "privileged_agent") == "deny"
+
+    def test_first_match_wins_allow_before_deny(self):
+        rules = [
+            TaskPermission(subagent_types=["researcher"], mode="allow"),
+            TaskPermission(subagent_types=["*"], mode="deny"),
+        ]
+        assert _check_task_permission(rules, "researcher") == "allow"
+        assert _check_task_permission(rules, "unknown_agent") == "deny"
+
+    def test_wildcard_matches_any_subagent_type(self):
+        rules = [TaskPermission(subagent_types=["*"], mode="deny")]
+        assert _check_task_permission(rules, "researcher") == "deny"
+        assert _check_task_permission(rules, "coder") == "deny"
+
+    def test_brace_expansion_matches_multiple_types(self):
+        rules = [TaskPermission(subagent_types=["{researcher,coder}"], mode="allow")]
+        assert _check_task_permission(rules, "researcher") == "allow"
+        assert _check_task_permission(rules, "coder") == "allow"
+        assert _check_task_permission(rules, "privileged_agent") == "allow"  # permissive default
+
+    def test_multiple_subagent_types_in_single_rule(self):
+        rules = [TaskPermission(subagent_types=["researcher", "coder"], mode="deny")]
+        assert _check_task_permission(rules, "researcher") == "deny"
+        assert _check_task_permission(rules, "coder") == "deny"
+        assert _check_task_permission(rules, "other_agent") == "allow"
+
+    def test_exact_match_only(self):
+        rules = [TaskPermission(subagent_types=["researcher"], mode="deny")]
+        assert _check_task_permission(rules, "researcher") == "deny"
+        assert _check_task_permission(rules, "researcher_v2") == "allow"
+
+
+class TestTaskPermissionMiddleware:
+    def _backend(self):
+        return _make_backend()
+
+    def _make_request(self, tool_name: str, args: dict, tool_call_id: str = "tc1"):
+        return ToolCallRequest(
+            runtime=_runtime(tool_call_id),
+            tool_call={"id": tool_call_id, "name": tool_name, "args": args},
+            state={},
+            tool=None,
+        )
+
+    def test_task_denied_by_rule(self):
+        middleware = _PermissionMiddleware(
+            rules=[TaskPermission(subagent_types=["privileged_agent"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("task", {"subagent_type": "privileged_agent", "prompt": "do something"})
+        result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
+        assert isinstance(result, ToolMessage)
+        assert "permission denied" in result.content
+        assert "privileged_agent" in result.content
+        assert result.status == "error"
+
+    def test_task_allowed_when_no_task_rules(self):
+        middleware = _PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("task", {"subagent_type": "any_agent", "prompt": "do something"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+        result = middleware.wrap_tool_call(request, lambda _: expected)
+        assert result is expected
+
+    def test_task_allowed_by_matching_allow_rule(self):
+        middleware = _PermissionMiddleware(
+            rules=[TaskPermission(subagent_types=["{researcher,coder}"], mode="allow")],
+            backend=self._backend(),
+        )
+        request = self._make_request("task", {"subagent_type": "researcher", "prompt": "research something"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+        result = middleware.wrap_tool_call(request, lambda _: expected)
+        assert result is expected
+
+    def test_task_permissive_default_no_match(self):
+        middleware = _PermissionMiddleware(
+            rules=[TaskPermission(subagent_types=["privileged_agent"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("task", {"subagent_type": "researcher", "prompt": "look into this"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+        result = middleware.wrap_tool_call(request, lambda _: expected)
+        assert result is expected
+
+    def test_mixed_fs_exec_and_task_rules(self):
+        middleware = _PermissionMiddleware(
+            rules=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+                ExecutePermission(patterns=["rm *"], mode="deny"),
+                TaskPermission(subagent_types=["privileged_agent"], mode="deny"),
+            ],
+            backend=self._backend(),
+        )
+        assert len(middleware._fs_rules) == 1
+        assert len(middleware._exec_rules) == 1
+        assert len(middleware._task_rules) == 1
+
+        task_request = self._make_request("task", {"subagent_type": "privileged_agent", "prompt": "do privileged thing"})
+        task_result = middleware.wrap_tool_call(task_request, lambda _: ToolMessage(content="ok", tool_call_id="tc1"))
+        assert "permission denied" in task_result.content
+
+        allowed_task = self._make_request("task", {"subagent_type": "researcher", "prompt": "research"})
+        allowed_expected = ToolMessage(content="ok", tool_call_id="tc1")
+        allowed_result = middleware.wrap_tool_call(allowed_task, lambda _: allowed_expected)
+        assert allowed_result is allowed_expected
+
+    async def test_async_task_denied(self):
+        middleware = _PermissionMiddleware(
+            rules=[TaskPermission(subagent_types=["privileged_agent"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("task", {"subagent_type": "privileged_agent", "prompt": "do something"})
+
+        async def async_handler(_):
+            return ToolMessage(content="should not reach", tool_call_id="tc1")
+
+        result = await middleware.awrap_tool_call(request, async_handler)
+        assert isinstance(result, ToolMessage)
+        assert "permission denied" in result.content
+        assert result.status == "error"
+
+    async def test_async_task_allowed(self):
+        middleware = _PermissionMiddleware(
+            rules=[TaskPermission(subagent_types=["privileged_agent"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("task", {"subagent_type": "researcher", "prompt": "research"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+
+        async def async_handler(_):
+            return expected
+
+        result = await middleware.awrap_tool_call(request, async_handler)
+        assert result is expected

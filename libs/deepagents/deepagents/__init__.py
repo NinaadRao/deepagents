@@ -5,7 +5,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
-from deepagents.middleware.permissions import ExecutePermission, FilesystemPermission
+from deepagents.middleware.permissions import ExecutePermission, FilesystemPermission, TaskPermission
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "MemoryMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
+    "TaskPermission",
     "__version__",
     "create_deep_agent",
 ]

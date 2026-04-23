@@ -4,12 +4,12 @@ Defines ``FilesystemPermission`` and ``ExecutePermission`` rules and enforces
 them via ``wrap_tool_call`` / ``awrap_tool_call``.
 """
 
-import fnmatch
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
+import wcmatch.fnmatch as wcfnmatch
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -119,6 +119,35 @@ class ExecutePermission:
     mode: Literal["allow", "deny"] = "allow"
 
 
+@dataclass
+class TaskPermission:
+    """A single access rule for subagent delegation via the ``task`` tool.
+
+    Rules are evaluated in declaration order. The first matching rule's
+    `mode` is applied. If no rule matches, the call is allowed (permissive
+    default).
+
+    Args:
+        subagent_types: Glob patterns matched against the ``subagent_type``
+            argument. Supports brace expansion (e.g. ``"{researcher,coder}"``).
+        mode: Whether to allow or deny matching subagent types.
+
+    Example:
+        ```python
+        from deepagents.middleware.permissions import TaskPermission
+
+        # Only allow the researcher subagent
+        TaskPermission(subagent_types=["researcher"], mode="allow")
+
+        # Deny a specific subagent type
+        TaskPermission(subagent_types=["privileged_agent"], mode="deny")
+        ```
+    """
+
+    subagent_types: list[str]
+    mode: Literal["allow", "deny"] = "allow"
+
+
 # ---------------------------------------------------------------------------
 # Glob flags
 # ---------------------------------------------------------------------------
@@ -186,7 +215,29 @@ def _check_execute_permission(
         ``"allow"`` if the command should proceed, ``"deny"`` if it should be blocked.
     """
     for rule in rules:
-        if any(fnmatch.fnmatch(command, pattern) for pattern in rule.patterns):
+        if any(wcfnmatch.fnmatch(command, pattern, flags=wcfnmatch.BRACE) for pattern in rule.patterns):
+            return rule.mode
+    return "allow"
+
+
+def _check_task_permission(
+    rules: list[TaskPermission],
+    subagent_type: str,
+) -> Literal["allow", "deny"]:
+    """Evaluate task permission rules for a subagent type.
+
+    Iterates rules in declaration order. The first matching rule's mode
+    is returned. If no rule matches, returns ``"allow"`` (permissive default).
+
+    Args:
+        rules: Ordered list of ``TaskPermission`` rules to evaluate.
+        subagent_type: The subagent type being invoked.
+
+    Returns:
+        ``"allow"`` if the invocation should proceed, ``"deny"`` if it should be blocked.
+    """
+    for rule in rules:
+        if any(wcfnmatch.fnmatch(subagent_type, pattern, flags=wcfnmatch.BRACE) for pattern in rule.subagent_types):
             return rule.mode
     return "allow"
 
@@ -272,13 +323,14 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
-    def __init__(self, *, rules: list[FilesystemPermission | ExecutePermission], backend: BACKEND_TYPES) -> None:  # noqa: ARG002
+    def __init__(self, *, rules: list[FilesystemPermission | ExecutePermission | TaskPermission], backend: BACKEND_TYPES) -> None:  # noqa: ARG002
         """Initialize the permission middleware.
 
         Args:
-            rules: List of ``FilesystemPermission`` and/or ``ExecutePermission``
-                rules, evaluated in declaration order; the first match per type
-                wins. If no rule matches, the call is allowed (permissive default).
+            rules: List of ``FilesystemPermission``, ``ExecutePermission``, and/or
+                ``TaskPermission`` rules, evaluated in declaration order; the first
+                match per type wins. If no rule matches, the call is allowed
+                (permissive default).
             backend: The backend instance. Execution-capable backends
                 (``SandboxBackendProtocol``) are fully supported — use
                 ``ExecutePermission`` rules to restrict the ``execute`` tool.
@@ -289,6 +341,7 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """
         self._fs_rules: list[FilesystemPermission] = [r for r in rules if isinstance(r, FilesystemPermission)]
         self._exec_rules: list[ExecutePermission] = [r for r in rules if isinstance(r, ExecutePermission)]
+        self._task_rules: list[TaskPermission] = [r for r in rules if isinstance(r, TaskPermission)]
         self._fs_tool_ops: dict[str, FilesystemOperation] = dict(_DEFAULT_FS_TOOL_OPS)
 
     # ------------------------------------------------------------------
@@ -319,6 +372,16 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if _check_execute_permission(self._exec_rules, command) == "deny":
                 return ToolMessage(
                     content=f"Error: permission denied for command: {command}",
+                    name=tool_name,
+                    tool_call_id=tool_call_id,
+                    status="error",
+                )
+
+        if self._task_rules and tool_name == "task":
+            subagent_type = args.get("subagent_type", "")
+            if _check_task_permission(self._task_rules, subagent_type) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for subagent type: {subagent_type}",
                     name=tool_name,
                     tool_call_id=tool_call_id,
                     status="error",
