@@ -374,12 +374,15 @@ done
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search for a literal string in files using `grep -F`."""
         search_path = shlex.quote(path or ".")
 
         # Build grep command
         grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        if context_lines > 0:
+            grep_opts += f" -C {context_lines}"
 
         # Add glob pattern if specified
         glob_pattern = ""
@@ -403,23 +406,66 @@ done
         if not output:
             return GrepResult(matches=[])
 
-        # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
-        for line in output.split("\n"):
-            # Format is: path:line_number:text
-            parts = line.split(":", 2)
-            if len(parts) >= _GREP_FIELD_COUNT:
-                try:
-                    matches.append(
-                        {
-                            "path": parts[0],
-                            "line": int(parts[1]),
-                            "text": parts[2],
-                        }
-                    )
-                except ValueError:
-                    logger.debug("Skipping malformed grep output line: %r", line)
+
+        if context_lines == 0:
+            for line in output.split("\n"):
+                # Format is: path:line_number:text
+                parts = line.split(":", 2)
+                if len(parts) >= _GREP_FIELD_COUNT:
+                    try:
+                        matches.append({"path": parts[0], "line": int(parts[1]), "text": parts[2]})
+                    except ValueError:
+                        logger.debug("Skipping malformed grep output line: %r", line)
+                        continue
+        else:
+            # Context case: match lines use "path:num:text", context lines use "path-num-text",
+            # groups are separated by "--".
+            pending_before: list[tuple[int, str]] = []
+            current_match: GrepMatch | None = None
+
+            for raw_line in output.split("\n"):
+                if raw_line == "--":
+                    if current_match is not None:
+                        matches.append(current_match)
+                        current_match = None
+                    pending_before = []
                     continue
+
+                colon_parts = raw_line.split(":", 2)
+                if len(colon_parts) >= _GREP_FIELD_COUNT:
+                    try:
+                        line_num = int(colon_parts[1])
+                        if current_match is not None:
+                            matches.append(current_match)
+                        current_match = {
+                            "path": colon_parts[0],
+                            "line": line_num,
+                            "text": colon_parts[2],
+                            "context_before": pending_before,
+                            "context_after": [],
+                        }
+                        pending_before = []
+                        continue
+                    except ValueError:
+                        pass
+
+                dash_parts = raw_line.split("-", 2)
+                if len(dash_parts) >= _GREP_FIELD_COUNT:
+                    try:
+                        ctx_ln = int(dash_parts[1])
+                        if current_match is not None:
+                            current_match.setdefault("context_after", []).append(
+                                (ctx_ln, dash_parts[2])
+                            )
+                        else:
+                            pending_before.append((ctx_ln, dash_parts[2]))
+                        continue
+                    except ValueError:
+                        pass
+
+            if current_match is not None:
+                matches.append(current_match)
 
         return GrepResult(matches=matches)
 
@@ -428,6 +474,7 @@ done
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search for a literal string in files using `grep -F` (sync).
 

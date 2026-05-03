@@ -4,7 +4,7 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**108 evals** across **7 categories**
+**111 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -22,7 +22,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_read_file_truncation_recovery_with_pagination`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L561) — `tests/evals/test_file_operations.py:561`
 - [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L599) — `tests/evals/test_file_operations.py:599`
 
-## Retrieval (`retrieval`) (6 evals)
+## Retrieval (`retrieval`) (9 evals)
 
 - [`test_frames`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L67) — `tests/evals/test_external_benchmarks.py:67`
 - [`test_grep_finds_matching_paths`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L321) — `tests/evals/test_file_operations.py:321`
@@ -30,6 +30,9 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_find_magic_phrase_deep_nesting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L377) — `tests/evals/test_file_operations.py:377`
 - [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L413) — `tests/evals/test_file_operations.py:413`
 - [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L488) — `tests/evals/test_file_operations.py:488`
+- [`test_grep_context_lines_prompted_shows_surrounding_lines`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_grep_context_lines.py#L36) — `tests/evals/test_grep_context_lines.py:36`
+- [`test_grep_context_lines_avoids_read_file_for_multi_file_call_sites`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_grep_context_lines.py#L92) — `tests/evals/test_grep_context_lines.py:92`
+- [`test_grep_context_lines_unprompted_reduces_round_trips`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_grep_context_lines.py#L154) — `tests/evals/test_grep_context_lines.py:154`
 
 ## Tool Use (`tool_use`) (53 evals)
 
