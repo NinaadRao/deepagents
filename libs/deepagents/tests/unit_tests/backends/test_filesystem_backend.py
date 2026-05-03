@@ -8,6 +8,7 @@ from langchain_core.messages import ToolMessage
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -557,6 +558,57 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     matches = be.grep(pattern, path="/").matches
     assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+def test_grep_context_lines_zero_has_no_context_fields(tmp_path: Path) -> None:
+    """context_lines=0 (default) must not add context_before/context_after to matches."""
+    (tmp_path / "f.py").write_text("alpha\nbeta\ngamma\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    matches = be.grep("beta", path="/", context_lines=0).matches
+    assert len(matches) == 1
+    assert "context_before" not in matches[0]
+    assert "context_after" not in matches[0]
+
+
+def test_grep_context_lines_returns_surrounding_lines(tmp_path: Path) -> None:
+    """context_lines=N attaches N lines of context before and after each match."""
+    (tmp_path / "f.py").write_text("alpha\nbeta\ngamma\ndelta\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    matches = be.grep("beta", path="/", context_lines=1).matches
+    assert len(matches) == 1
+    m = matches[0]
+    assert m["line"] == 2
+    assert m["context_before"] == [(1, "alpha")]
+    assert m["context_after"] == [(3, "gamma")]
+
+
+def test_grep_context_lines_clamps_at_file_boundaries(tmp_path: Path) -> None:
+    """context_lines never goes past the start or end of the file."""
+    (tmp_path / "f.py").write_text("alpha\nbeta\ngamma\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    # Match on first line: no context_before
+    matches = be.grep("alpha", path="/", context_lines=2).matches
+    assert len(matches) == 1
+    assert matches[0]["context_before"] == []
+    assert len(matches[0]["context_after"]) == 2
+
+    # Match on last non-empty line: no context_after
+    matches = be.grep("gamma", path="/", context_lines=2).matches
+    assert len(matches) == 1
+    assert len(matches[0]["context_before"]) == 2
+
+
+def test_grep_context_lines_no_duplicate_lines_when_matches_overlap(tmp_path: Path) -> None:
+    """format_grep_matches must not emit the same line number twice for overlapping context windows."""
+    (tmp_path / "f.py").write_text("a\nmatch1\nb\nmatch2\nc\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    matches = be.grep("match", path="/", context_lines=1).matches
+    assert len(matches) == 2
+    formatted = format_grep_matches(matches, output_mode="content")
+    content_lines = [ln for ln in formatted.split("\n") if ln.strip() and ":" in ln.strip()[:5]]
+    line_nums = [ln.strip().split(":")[0] for ln in content_lines if ln.strip()[0].isdigit()]
+    assert len(line_nums) == len(set(line_nums)), f"Duplicate line numbers in output: {line_nums}"
 
 
 class TestToVirtualPath:

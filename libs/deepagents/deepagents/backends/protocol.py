@@ -153,6 +153,12 @@ class GrepMatch(TypedDict):
     text: str
     """Content of the matching line."""
 
+    context_before: NotRequired[list[tuple[int, str]]]
+    """Lines preceding the match as (line_number, text) pairs. Present when context_lines > 0."""
+
+    context_after: NotRequired[list[tuple[int, str]]]
+    """Lines following the match as (line_number, text) pairs. Present when context_lines > 0."""
+
 
 class FileData(TypedDict):
     """Data structure for storing file contents with metadata."""
@@ -401,6 +407,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,  # noqa: ARG002
     ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
@@ -427,6 +434,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `**` matches any directories recursively
                 - `?` matches single character
                 - `[abc]` matches one character from set
+
+            context_lines: Number of surrounding lines to include with each match.
+
+                0 (default) returns only the matching line.
+                Positive values attach up to N lines before and after each match.
 
         Examples:
             - `'*.py'` - only search Python files
@@ -460,9 +472,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> "GrepResult":
         """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        return await asyncio.to_thread(self.grep, pattern, path, glob, context_lines)
 
     def glob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.

@@ -294,6 +294,11 @@ class GrepSchema(BaseModel):
         default="files_with_matches",
         description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
     )
+    context_lines: int = Field(
+        default=0,
+        ge=0,
+        description="Number of lines to include before and after each match. 0 (default) returns the matching line only.",
+    )
 
 
 class ExecuteSchema(BaseModel):
@@ -1353,6 +1358,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
+            context_lines: Annotated[
+                int,
+                "Number of lines to include before and after each match. 0 (default) returns the matching line only.",
+            ] = 0,
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -1373,7 +1382,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob, context_lines=context_lines)
             if grep_result.error:
                 return ToolMessage(
                     content=grep_result.error,
@@ -1400,6 +1409,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
+            context_lines: Annotated[
+                int,
+                "Number of lines to include before and after each match. 0 (default) returns the matching line only.",
+            ] = 0,
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -1420,7 +1433,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob, context_lines=context_lines)
             if grep_result.error:
                 return ToolMessage(
                     content=grep_result.error,

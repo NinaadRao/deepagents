@@ -514,6 +514,7 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search for a literal text pattern in files.
 
@@ -523,6 +524,7 @@ class FilesystemBackend(BackendProtocol):
             pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            context_lines: Number of lines to include before and after each match.
 
         Returns:
             GrepResult with matches or error.
@@ -544,30 +546,32 @@ class FilesystemBackend(BackendProtocol):
             return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
-        results = self._ripgrep_search(pattern, base_full, glob)
+        results = self._ripgrep_search(pattern, base_full, glob, context_lines)
         if results is None:
             # Python fallback needs escaped pattern for literal search
-            results = self._python_search(re.escape(pattern), base_full, glob)
+            results = self._python_search(re.escape(pattern), base_full, glob, context_lines)
 
         matches: list[GrepMatch] = []
-        for fpath, items in results.items():
-            for line_num, line_text in items:
-                matches.append({"path": fpath, "line": int(line_num), "text": line_text})
+        for file_matches in results.values():
+            matches.extend(file_matches)
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None, context_lines: int = 0) -> dict[str, list[GrepMatch]] | None:  # noqa: C901, PLR0912, PLR0915
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
             pattern: Literal string to search for (unescaped).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
+            context_lines: Number of surrounding lines to collect per match.
 
         Returns:
-            Dict mapping file paths to list of `(line_number, line_text)` tuples.
+            Dict mapping file paths to lists of GrepMatch dicts.
                 Returns `None` if ripgrep is unavailable or times out.
         """
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
+        if context_lines > 0:
+            cmd.extend(["-C", str(context_lines)])
         if include_glob:
             cmd.extend(["--glob", include_glob])
         cmd.extend(["--", pattern, str(base_full)])
@@ -583,13 +587,16 @@ class FilesystemBackend(BackendProtocol):
         except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             return None
 
-        results: dict[str, list[tuple[int, str]]] = {}
-        for line in proc.stdout.splitlines():
+        # Collect match and context entries per resolved virtual path.
+        file_data: dict[str, dict] = {}
+
+        for raw_line in proc.stdout.splitlines():
             try:
-                data = json.loads(line)
+                data = json.loads(raw_line)
             except json.JSONDecodeError:
                 continue
-            if data.get("type") != "match":
+            entry_type = data.get("type")
+            if entry_type not in ("match", "context"):
                 continue
             pdata = data.get("data", {})
             ftext = pdata.get("path", {}).get("text")
@@ -611,11 +618,28 @@ class FilesystemBackend(BackendProtocol):
             lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
             if ln is None:
                 continue
-            results.setdefault(virt, []).append((int(ln), lt))
+            fd = file_data.setdefault(virt, {"matches": [], "contexts": {}})
+            if entry_type == "match":
+                fd["matches"].append((int(ln), lt))
+            else:
+                fd["contexts"][int(ln)] = lt
+
+        # Assemble GrepMatch objects, attaching context windows to each match.
+        results: dict[str, list[GrepMatch]] = {}
+        for virt, fd in file_data.items():
+            contexts: dict[int, str] = fd["contexts"]
+            file_matches: list[GrepMatch] = []
+            for match_ln, match_text in fd["matches"]:
+                match: GrepMatch = {"path": virt, "line": match_ln, "text": match_text}
+                if context_lines > 0:
+                    match["context_before"] = [(ln, contexts[ln]) for ln in range(match_ln - context_lines, match_ln) if ln in contexts]
+                    match["context_after"] = [(ln, contexts[ln]) for ln in range(match_ln + 1, match_ln + context_lines + 1) if ln in contexts]
+                file_matches.append(match)
+            results[virt] = file_matches
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901, PLR0912
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None, context_lines: int = 0) -> dict[str, list[GrepMatch]]:  # noqa: C901, PLR0912
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
@@ -624,14 +648,15 @@ class FilesystemBackend(BackendProtocol):
             pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
+            context_lines: Number of surrounding lines to collect per match.
 
         Returns:
-            Dict mapping file paths to list of `(line_number, line_text)` tuples.
+            Dict mapping file paths to lists of GrepMatch dicts.
         """
         # Compile escaped pattern once for efficiency (used in loop)
         regex = re.compile(pattern)
 
-        results: dict[str, list[tuple[int, str]]] = {}
+        results: dict[str, list[GrepMatch]] = {}
         root = base_full if base_full.is_dir() else base_full.parent
 
         for fp in root.rglob("*"):
@@ -653,7 +678,8 @@ class FilesystemBackend(BackendProtocol):
                 content = fp.read_text()
             except (UnicodeDecodeError, PermissionError, OSError, RuntimeError):
                 continue
-            for line_num, line in enumerate(content.splitlines(), 1):
+            file_lines = content.splitlines()
+            for line_idx, line in enumerate(file_lines):
                 if regex.search(line):
                     if self.virtual_mode:
                         try:
@@ -666,7 +692,14 @@ class FilesystemBackend(BackendProtocol):
                             continue
                     else:
                         virt_path = str(fp)
-                    results.setdefault(virt_path, []).append((line_num, line))
+                    line_num = line_idx + 1
+                    match: GrepMatch = {"path": virt_path, "line": line_num, "text": line}
+                    if context_lines > 0:
+                        before_start = max(0, line_idx - context_lines)
+                        match["context_before"] = [(before_start + i + 1, file_lines[before_start + i]) for i in range(line_idx - before_start)]
+                        after_end = min(len(file_lines), line_idx + 1 + context_lines)
+                        match["context_after"] = [(line_idx + 2 + i, file_lines[line_idx + 1 + i]) for i in range(after_end - line_idx - 1)]
+                    results.setdefault(virt_path, []).append(match)
 
         return results
 

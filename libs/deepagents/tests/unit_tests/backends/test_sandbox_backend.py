@@ -657,6 +657,49 @@ def test_sandbox_grep_literal_search() -> None:
     assert "grep -rHnF" in sandbox.last_command
 
 
+def test_sandbox_grep_context_lines_zero_has_no_context_fields() -> None:
+    """context_lines=0 (default) must not add context_before/context_after to sandbox matches."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        return ExecuteResponse(
+            output="/test/f.py:2:beta",
+            exit_code=0,
+            truncated=False,
+        )
+
+    sandbox.execute = mock_execute
+    matches = sandbox.grep("beta", path="/test", context_lines=0).matches
+    assert len(matches) == 1
+    assert "context_before" not in matches[0]
+    assert "context_after" not in matches[0]
+
+
+def test_sandbox_grep_context_lines_passes_flag_and_parses_output() -> None:
+    """context_lines=N appends -C N to the grep command and parses context lines."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        # Simulate grep -C 1 output: context lines use dash separator, matches use colon
+        return ExecuteResponse(
+            output="/test/f.py-1-alpha\n/test/f.py:2:beta\n/test/f.py-3-gamma",
+            exit_code=0,
+            truncated=False,
+        )
+
+    sandbox.execute = mock_execute
+    matches = sandbox.grep("beta", path="/test", context_lines=1).matches
+    assert sandbox.last_command is not None
+    assert "-C 1" in sandbox.last_command
+    assert len(matches) == 1
+    m = matches[0]
+    assert m["line"] == 2
+    assert m["text"] == "beta"
+    assert m["context_before"] == [(1, "alpha")]
+    assert m["context_after"] == [(3, "gamma")]
+
+
 def test_sandbox_grep_quotes_include_glob() -> None:
     """Test that grep shell-quotes the include glob pattern."""
     sandbox = MockSandbox()

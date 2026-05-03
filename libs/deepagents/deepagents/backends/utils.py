@@ -697,6 +697,7 @@ def grep_matches_from_files(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
+    context_lines: int = 0,
 ) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
@@ -716,12 +717,20 @@ def grep_matches_from_files(
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
 
-    matches: list[GrepMatch] = []
+    matches: list[_GrepMatch] = []
     for file_path, file_data in filtered.items():
         content_str = _normalize_content(file_data)
-        for line_num, line in enumerate(content_str.split("\n"), 1):
+        file_lines = content_str.split("\n")
+        for line_idx, line in enumerate(file_lines):
             if pattern in line:  # Simple substring search for literal matching
-                matches.append({"path": file_path, "line": int(line_num), "text": line})
+                line_num = line_idx + 1
+                match: _GrepMatch = {"path": file_path, "line": line_num, "text": line}
+                if context_lines > 0:
+                    before_start = max(0, line_idx - context_lines)
+                    match["context_before"] = [(before_start + i + 1, file_lines[before_start + i]) for i in range(line_idx - before_start)]
+                    after_end = min(len(file_lines), line_idx + 1 + context_lines)
+                    match["context_after"] = [(line_idx + 2 + i, file_lines[line_idx + 1 + i]) for i in range(after_end - line_idx - 1)]
+                matches.append(match)
     return GrepResult(matches=matches)
 
 
@@ -733,11 +742,33 @@ def build_grep_results_dict(matches: list[GrepMatch]) -> dict[str, list[tuple[in
     return grouped
 
 
-def format_grep_matches(
-    matches: list[GrepMatch],
+def format_grep_matches(  # noqa: C901
+    matches: list[_GrepMatch],
     output_mode: Literal["files_with_matches", "content", "count"],
 ) -> str:
     """Format structured grep matches using existing formatting logic."""
     if not matches:
         return "No matches found"
+    has_context = any("context_before" in m or "context_after" in m for m in matches)
+    if output_mode == "content" and has_context:
+        grouped: dict[str, list[_GrepMatch]] = {}
+        for m in matches:
+            grouped.setdefault(m["path"], []).append(m)
+        lines = []
+        for file_path in sorted(grouped.keys()):
+            lines.append(f"{file_path}:")
+            emitted: set[int] = set()
+            for match in grouped[file_path]:
+                for ctx_ln, ctx_text in match.get("context_before", []):
+                    if ctx_ln not in emitted:
+                        lines.append(f"  {ctx_ln}: {ctx_text}")
+                        emitted.add(ctx_ln)
+                if match["line"] not in emitted:
+                    lines.append(f"  {match['line']}: {match['text']}")
+                    emitted.add(match["line"])
+                for ctx_ln, ctx_text in match.get("context_after", []):
+                    if ctx_ln not in emitted:
+                        lines.append(f"  {ctx_ln}: {ctx_text}")
+                        emitted.add(ctx_ln)
+        return "\n".join(lines)
     return _format_grep_results(build_grep_results_dict(matches), output_mode)

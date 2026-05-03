@@ -435,6 +435,30 @@ def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
+def test_store_backend_grep_context_lines_zero_has_no_context_fields() -> None:
+    """context_lines=0 must not add context_before/context_after to store-backend matches."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/f.txt", "alpha\nbeta\ngamma\n")
+    matches = be.grep("beta", path="/", context_lines=0).matches
+    assert len(matches) == 1
+    assert "context_before" not in matches[0]
+    assert "context_after" not in matches[0]
+
+
+def test_store_backend_grep_context_lines_returns_surrounding_lines() -> None:
+    """context_lines=N attaches N surrounding lines to each store-backend match."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/f.txt", "alpha\nbeta\ngamma\ndelta\n")
+    matches = be.grep("beta", path="/", context_lines=1).matches
+    assert len(matches) == 1
+    m = matches[0]
+    assert m["line"] == 2
+    assert m["context_before"] == [(1, "alpha")]
+    assert m["context_after"] == [(3, "gamma")]
+
+
 # --- _validate_namespace tests ---
 
 
