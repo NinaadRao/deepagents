@@ -21,6 +21,7 @@ and immediately re-emit the same tool call, looping the interrupt indefinitely.
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -74,6 +75,17 @@ def controlled_tool(tool_input: str) -> str:
 # ---------------------------------------------------------------------------
 
 type RejectionFactory = Callable[[ToolCall, dict[str, Any]], ToolMessage]
+
+
+def _retry_on_rate_limit(fn: Callable[[], Any], *, delay: int = 60) -> Any:
+    """Call fn; on a rate-limit error sleep delay seconds and retry once."""
+    try:
+        return fn()
+    except Exception as exc:
+        if type(exc).__name__ == "RateLimitError":
+            time.sleep(delay)
+            return fn()
+        raise
 
 
 def _agent_with_rejection_response(
@@ -137,19 +149,18 @@ def test_reject_skips_tool_execution(model: BaseChatModel) -> None:
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    run_agent(
-        agent,
-        query="Call the controlled tool with input 'hello'.",
-        model=model,
-        thread_id=thread_id,
+    _retry_on_rate_limit(
+        lambda: run_agent(agent, query="Call the controlled tool with input 'hello'.", model=model, thread_id=thread_id)
     )
 
     state = agent.get_state(config)
     assert state.interrupts, "Expected an interrupt before rejecting"
 
-    agent.invoke(
-        Command(resume={"decisions": [{"type": "reject", "message": "do not run this"}]}),
-        config=config,
+    _retry_on_rate_limit(
+        lambda: agent.invoke(
+            Command(resume={"decisions": [{"type": "reject", "message": "do not run this"}]}),
+            config=config,
+        )
     )
 
     assert _call_counter[0] == 0, (
@@ -197,6 +208,7 @@ def test_reject_causes_retry_with_default_status(model: BaseChatModel) -> None:
 # ---------------------------------------------------------------------------
 
 
+
 @pytest.mark.langsmith
 @pytest.mark.eval_category("unit_test")
 @pytest.mark.eval_tier("hillclimb")
@@ -233,21 +245,80 @@ def test_reject_no_retry_matrix(
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    run_agent(
-        agent,
-        query="Call the controlled tool with input 'hello'.",
-        model=model,
-        thread_id=thread_id,
+    _retry_on_rate_limit(
+        lambda: run_agent(agent, query="Call the controlled tool with input 'hello'.", model=model, thread_id=thread_id)
     )
 
     state = agent.get_state(config)
     assert state.interrupts, "Expected an interrupt before rejecting"
 
-    agent.invoke(
-        Command(resume={"decisions": [{"type": "reject", "message": "do not run this"}]}),
-        config=config,
+    _retry_on_rate_limit(
+        lambda: agent.invoke(
+            Command(resume={"decisions": [{"type": "reject", "message": "do not run this"}]}),
+            config=config,
+        )
     )
 
     retried = _did_retry(agent, config)
     t.log_feedback(key="retry_after_reject", value=1 if retried else 0)
     t.log_feedback(key="correctness", value=0 if retried else 1)
+
+
+@pytest.mark.langsmith
+@pytest.mark.eval_category("unit_test")
+@pytest.mark.eval_tier("hillclimb")
+@requires_rejection_response
+@pytest.mark.parametrize(
+    ("status", "add_no_retry_copy"),
+    [
+        ("error", False),
+        ("error", True),
+        ("success", False),
+        ("success", True),
+    ],
+    ids=["error_no_copy", "error_with_copy", "success_no_copy", "success_with_copy"],
+)
+def test_reject_loop_depth_matrix(
+    model: BaseChatModel,
+    status: str,
+    add_no_retry_copy: bool,
+) -> None:
+    """Measure how many times a model retries the same tool call across rejection conditions.
+
+    test_reject_no_retry_matrix checks whether the model retries at all (binary).
+    This test counts total retry rounds up to MAX_REJECTIONS (2), giving a depth signal
+    per model/condition. retry_depth=0 means no loop; retry_depth=2 with
+    correctness=0 means the loop is still active at the ceiling — effectively infinite.
+
+    Conditions mirror test_reject_no_retry_matrix so both tests can be compared directly.
+    """
+    MAX_REJECTIONS = 2
+
+    factory = _make_factory(status, add_no_retry_copy=add_no_retry_copy)
+    checkpointer = MemorySaver()
+    agent = _agent_with_rejection_response(model, checkpointer, rejection_response=factory)
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    _retry_on_rate_limit(
+        lambda: run_agent(agent, query="Call the controlled tool with input 'hello'.", model=model, thread_id=thread_id)
+    )
+
+    assert agent.get_state(config).interrupts, "Expected an interrupt before rejecting"
+
+    retry_count = 0
+    for _ in range(MAX_REJECTIONS):
+        state = agent.get_state(config)
+        if not state.interrupts:
+            break
+        _retry_on_rate_limit(
+            lambda: agent.invoke(
+                Command(resume={"decisions": [{"type": "reject", "message": "do not run this"}]}),
+                config=config,
+            )
+        )
+        retry_count += 1
+
+    still_looping = bool(agent.get_state(config).interrupts)
+    t.log_feedback(key="retry_depth", value=retry_count)
+    t.log_feedback(key="correctness", value=0 if still_looping else 1)
