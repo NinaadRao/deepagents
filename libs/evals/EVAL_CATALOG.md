@@ -4,7 +4,7 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**111 evals** across **7 categories**
+**112 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -120,14 +120,15 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_compact_tool_not_overly_sensitive`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L262) — `tests/evals/test_summarization.py:262`
 - [`test_compact_tool_large_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L278) — `tests/evals/test_summarization.py:278`
 
-## Unit Test (`unit_test`) (15 evals)
+## Unit Test (`unit_test`) (16 evals)
 
 - [`test_hitl_agent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L54) — `tests/evals/test_hitl.py:54`
 - [`test_subagent_with_hitl`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L122) — `tests/evals/test_hitl.py:122`
 - [`test_subagent_with_custom_interrupt_on`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L183) — `tests/evals/test_hitl.py:183`
-- [`test_reject_skips_tool_execution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L131) — `tests/evals/test_hitl_reject.py:131`
-- [`test_reject_causes_retry_with_default_status`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L163) — `tests/evals/test_hitl_reject.py:163`
-- [`test_reject_no_retry_matrix`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L214) — `tests/evals/test_hitl_reject.py:214`
+- [`test_reject_skips_tool_execution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L145) — `tests/evals/test_hitl_reject.py:145`
+- [`test_reject_causes_retry_with_default_status`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L181) — `tests/evals/test_hitl_reject.py:181`
+- [`test_reject_no_retry_matrix`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L232) — `tests/evals/test_hitl_reject.py:232`
+- [`test_reject_loop_depth_matrix`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L292) — `tests/evals/test_hitl_reject.py:292`
 - [`test_read_skill_full_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L40) — `tests/evals/test_skills.py:40`
 - [`test_read_skill_by_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L78) — `tests/evals/test_skills.py:78`
 - [`test_combine_two_skills`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L122) — `tests/evals/test_skills.py:122`

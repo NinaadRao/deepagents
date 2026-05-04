@@ -24,7 +24,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import pytest
 from deepagents import create_deep_agent
@@ -76,8 +76,10 @@ def controlled_tool(tool_input: str) -> str:
 
 type RejectionFactory = Callable[[ToolCall, dict[str, Any]], ToolMessage]
 
+_T = TypeVar("_T")
 
-def _retry_on_rate_limit(fn: Callable[[], Any], *, delay: int = 60) -> Any:
+
+def _retry_on_rate_limit(fn: Callable[[], _T], *, delay: int = 60) -> _T:
     """Call fn; on a rate-limit error sleep delay seconds and retry once."""
     try:
         return fn()
@@ -150,7 +152,12 @@ def test_reject_skips_tool_execution(model: BaseChatModel) -> None:
     config = {"configurable": {"thread_id": thread_id}}
 
     _retry_on_rate_limit(
-        lambda: run_agent(agent, query="Call the controlled tool with input 'hello'.", model=model, thread_id=thread_id)
+        lambda: run_agent(
+            agent,
+            query="Call the controlled tool with input 'hello'.",
+            model=model,
+            thread_id=thread_id,
+        )
     )
 
     state = agent.get_state(config)
@@ -208,7 +215,6 @@ def test_reject_causes_retry_with_default_status(model: BaseChatModel) -> None:
 # ---------------------------------------------------------------------------
 
 
-
 @pytest.mark.langsmith
 @pytest.mark.eval_category("unit_test")
 @pytest.mark.eval_tier("hillclimb")
@@ -246,7 +252,12 @@ def test_reject_no_retry_matrix(
     config = {"configurable": {"thread_id": thread_id}}
 
     _retry_on_rate_limit(
-        lambda: run_agent(agent, query="Call the controlled tool with input 'hello'.", model=model, thread_id=thread_id)
+        lambda: run_agent(
+            agent,
+            query="Call the controlled tool with input 'hello'.",
+            model=model,
+            thread_id=thread_id,
+        )
     )
 
     state = agent.get_state(config)
@@ -292,7 +303,7 @@ def test_reject_loop_depth_matrix(
 
     Conditions mirror test_reject_no_retry_matrix so both tests can be compared directly.
     """
-    MAX_REJECTIONS = 2
+    max_rejections = 2
 
     factory = _make_factory(status, add_no_retry_copy=add_no_retry_copy)
     checkpointer = MemorySaver()
@@ -301,13 +312,18 @@ def test_reject_loop_depth_matrix(
     config = {"configurable": {"thread_id": thread_id}}
 
     _retry_on_rate_limit(
-        lambda: run_agent(agent, query="Call the controlled tool with input 'hello'.", model=model, thread_id=thread_id)
+        lambda: run_agent(
+            agent,
+            query="Call the controlled tool with input 'hello'.",
+            model=model,
+            thread_id=thread_id,
+        )
     )
 
     assert agent.get_state(config).interrupts, "Expected an interrupt before rejecting"
 
     retry_count = 0
-    for _ in range(MAX_REJECTIONS):
+    for _ in range(max_rejections):
         state = agent.get_state(config)
         if not state.interrupts:
             break
