@@ -29,6 +29,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
     "unit_test": [
         "test_system_prompt",
         "test_hitl",
+        "test_hitl_reject",
         "test_subagents",
         "test_skills",
     ],
