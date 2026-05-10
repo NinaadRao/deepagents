@@ -31,6 +31,7 @@ from deepagents_cli.model_config import (
     ProviderAuthStatus,
     clear_default_model,
     get_available_models,
+    get_credential_env_var,
     get_model_profiles,
     get_provider_auth_status,
     save_default_model,
@@ -85,13 +86,17 @@ class ModelOption(Static):
         """
         super().__init__(label, classes=classes)
         self.model_spec = model_spec
-        self.provider = provider
         self.index = index
         self.auth_status = auth_status or ProviderAuthStatus(
             state=ProviderAuthState.UNKNOWN,
             provider=provider,
             detail="credentials unknown",
         )
+
+    @property
+    def provider(self) -> str:
+        """Provider name, derived from the embedded auth status."""
+        return self.auth_status.provider
 
     class Clicked(Message):
         """Message sent when a model option is clicked."""
@@ -512,7 +517,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The click event with model info.
         """
         self._selected_index = event.index
-        self._dismiss_with_result((event.model_spec, event.provider))
+        self._select_with_auth_check(event.model_spec, event.provider)
 
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
@@ -631,19 +636,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         all_widgets: list[Static] = []
 
         for provider, model_entries in by_provider.items():
-            # Provider header with auth/readiness indicator.
+            # Provider header; auth/readiness indicator appended only when non-empty.
             auth_status = auth_statuses[provider]
             auth_indicator = self._format_auth_indicator(auth_status, glyphs)
-            all_widgets.append(
-                Static(
-                    Content.from_markup(
-                        "[bold]$provider[/bold] [dim]$auth[/dim]",
-                        provider=provider,
-                        auth=auth_indicator,
-                    ),
-                    classes="model-provider-header",
+            if auth_indicator:
+                header_content = Content.from_markup(
+                    "[bold]$provider[/bold] [dim]$auth[/dim]",
+                    provider=provider,
+                    auth=auth_indicator,
                 )
-            )
+            else:
+                header_content = Content.from_markup(
+                    "[bold]$provider[/bold]",
+                    provider=provider,
+                )
+            all_widgets.append(Static(header_content, classes="model-provider-header"))
 
             for model_spec, _prov in model_entries:
                 is_current = model_spec == current_spec
@@ -705,12 +712,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             glyphs: Glyph table for the active terminal mode.
 
         Returns:
-            Text shown next to the provider name.
+            Text shown next to the provider name, or an empty string when no
+                indicator should be rendered (e.g., `CONFIGURED`).
         """
         state = auth_status.state
         match state:
             case ProviderAuthState.CONFIGURED:
-                return f"{glyphs.checkmark} credentials set"
+                return ""
             case ProviderAuthState.MISSING:
                 if auth_status.env_var:
                     return f"{glyphs.warning} missing {auth_status.env_var}"
@@ -1049,7 +1057,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # If there are filtered results, always select the highlighted model
         if self._filtered_models:
             model_spec, provider = self._filtered_models[self._selected_index]
-            self._dismiss_with_result((model_spec, provider))
+            self._select_with_auth_check(model_spec, provider)
             return
 
         # No matches - check if user typed a custom provider:model spec
@@ -1058,9 +1066,47 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
-            self._dismiss_with_result((custom_input, provider))
+            self._select_with_auth_check(custom_input, provider)
         elif custom_input:
             self._dismiss_with_result((custom_input, ""))
+
+    def _select_with_auth_check(self, model_spec: str, provider: str) -> None:
+        """Either dismiss with the selection, or prompt for credentials first.
+
+        When the highlighted provider has `blocks_start` auth (typically a
+        missing API key), open the in-TUI auth prompt instead of dismissing.
+        On save, dismiss with the originally-selected model. On cancel, stay
+        on the selector and refresh the credential indicator so the user can
+        try again or pick a different provider.
+        """
+        if not provider:
+            self._dismiss_with_result((model_spec, provider))
+            return
+        status = get_provider_auth_status(provider)
+        if not status.blocks_start:
+            self._dismiss_with_result((model_spec, provider))
+            return
+        env_var = status.env_var or get_credential_env_var(provider)
+
+        from deepagents_cli.widgets.auth import AuthPromptScreen, AuthResult
+
+        def _on_auth_done(result: AuthResult | None) -> None:
+            if result is AuthResult.SAVED:
+                self._dismiss_with_result((model_spec, provider))
+                return
+            # On DELETED or CANCELLED the user explicitly chose not to
+            # provide a key; refresh the credential indicator and stay on
+            # the selector so they can pick a different provider.
+            self.call_after_refresh(self._update_display)
+
+        self.app.push_screen(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=f"Required to use {model_spec}",
+            ),
+            _on_auth_done,
+        )
 
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.

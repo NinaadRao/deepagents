@@ -43,11 +43,15 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     1. Explicit `-a <name>` (stored as `args.agent` by argparse).
     2. `-r <thread>` is present → use `DEFAULT_AGENT_NAME`. The real agent is
         inferred later by `_resolve_resume_thread` via thread metadata
-        (`get_thread_agent`), so we must NOT pre-seed a recent-agent here or
+        (`get_thread_agent`), so we must NOT pre-seed a stored agent here or
         it would suppress that inference.
-    3. `[agents].recent` from config, if it points at an agent whose
-        directory still exists.
-    4. `DEFAULT_AGENT_NAME` as the final fallback.
+    3. `[agents].default` from config — the user's intentional sticky
+        default (set via Ctrl+S in the `/agents` picker).
+    4. `[agents].recent` from config — the most recently switched-to agent.
+    5. `DEFAULT_AGENT_NAME` as the final fallback.
+
+    Both `default` and `recent` are gated by `_recent_agent_is_valid` so a
+    stale entry pointing at a deleted agent directory is ignored.
 
     Extracted from the `cli_main` body so it's unit-testable without
     constructing the full arg tree.
@@ -65,7 +69,11 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     if getattr(args, "resume_thread", None) is not None:
         return DEFAULT_AGENT_NAME
 
-    from deepagents_cli.model_config import load_recent_agent
+    from deepagents_cli.model_config import load_default_agent, load_recent_agent
+
+    default = load_default_agent()
+    if default and _recent_agent_is_valid(default):
+        return default
 
     recent = load_recent_agent()
     if recent and _recent_agent_is_valid(recent):
@@ -675,8 +683,9 @@ def parse_args() -> argparse.Namespace:
         metavar="NAME",
         help=(
             "Agent to use (e.g., coder, researcher). "
-            "If omitted, falls back to [agents].recent in config, then "
-            f"the '{DEFAULT_AGENT_NAME}' default."
+            "If omitted, falls back to [agents].default, then "
+            "[agents].recent, then "
+            f"the '{DEFAULT_AGENT_NAME}' built-in default."
         ),
     )
 
@@ -1673,10 +1682,14 @@ def cli_main() -> None:
             try:
                 from rich.markup import escape
 
+                from deepagents_cli._env_vars import DEBUG_UPDATE
                 from deepagents_cli._version import __version__ as cli_version
                 from deepagents_cli.config import _is_editable_install
                 from deepagents_cli.update_check import (
+                    create_update_log_path,
                     format_age_suffix,
+                    format_installed_age_suffix,
+                    format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
                     upgrade_command,
@@ -1707,12 +1720,24 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
-                age_suffix = format_age_suffix(latest)
+                release_age = format_release_age_parenthetical(latest)
+                installed_age = format_installed_age_suffix(cli_version)
                 console.print(
-                    f"Update available: v{latest} "
-                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Upgrading..."
                 )
-                success, output = asyncio.run(perform_upgrade())
+                if os.environ.get(DEBUG_UPDATE):
+                    console.print("Skipped update install (debug mode).", style="dim")
+                    sys.exit(0)
+                log_path = create_update_log_path()
+                console.print(
+                    f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(perform_upgrade(log_path=log_path))
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
@@ -2076,7 +2101,8 @@ def cli_main() -> None:
                 if result.update_available[0]:
                     from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
-                        format_age_suffix,
+                        format_installed_age_suffix,
+                        format_release_age_parenthetical,
                         is_auto_update_enabled,
                         mark_update_notified,
                         should_notify_update,
@@ -2086,11 +2112,14 @@ def cli_main() -> None:
                     latest = result.update_available[1]
                     if latest and should_notify_update(latest):
                         console.print()
-                        age_suffix = format_age_suffix(latest)
+                        release_age = format_release_age_parenthetical(latest)
+                        installed_age = format_installed_age_suffix(cli_version)
                         update_msg = Text("Update available: ", style="yellow bold")
                         update_msg.append(f"v{latest}", style="yellow")
+                        update_msg.append(release_age, style="dim")
                         update_msg.append(
-                            f" (current: v{cli_version}{age_suffix})", style="dim"
+                            f". Currently installed: {cli_version}{installed_age}.",
+                            style="dim",
                         )
                         console.print(update_msg)
                         cmd_hint = Text("Run: ", style="dim")

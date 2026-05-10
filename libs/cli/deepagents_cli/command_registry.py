@@ -79,10 +79,28 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="switch profile persona",
     ),
     SlashCommand(
+        name="/auth",
+        description="Manage stored API keys for model providers",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="key keys credential credentials login token api",
+        aliases=("/connect",),
+    ),
+    SlashCommand(
         name="/clear",
         description="Clear chat and start new thread",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reset",
+    ),
+    SlashCommand(
+        name="/copy",
+        description="Copy latest assistant message to clipboard",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+    ),
+    SlashCommand(
+        name="/force-clear",
+        description="Interrupt active work, clear chat, and start new thread",
+        bypass_tier=BypassTier.ALWAYS,
+        hidden_keywords="reset interrupt",
     ),
     SlashCommand(
         name="/editor",

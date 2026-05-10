@@ -75,6 +75,7 @@ class TestBypassTiers:
     def test_aliases_in_correct_tier(self) -> None:
         assert "/q" in ALWAYS_IMMEDIATE
         assert "/compact" in QUEUE_BOUND
+        assert "/connect" in IMMEDIATE_UI
 
     def test_every_command_classified(self) -> None:
         for cmd in COMMANDS:
@@ -133,6 +134,21 @@ class TestAgentsCommand:
 
     def test_agents_classified_as_immediate_ui(self) -> None:
         assert "/agents" in IMMEDIATE_UI
+
+
+class TestCopyCommand:
+    """Validate the `/copy` entry specifically."""
+
+    def test_copy_registered_for_autocomplete(self) -> None:
+        copy_entry = next(entry for entry in SLASH_COMMANDS if entry.name == "/copy")
+
+        assert copy_entry.description == "Copy latest assistant message to clipboard"
+
+    def test_copy_classified_as_side_effect_free(self) -> None:
+        copy_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/copy")
+
+        assert copy_cmd.description == "Copy latest assistant message to clipboard"
+        assert "/copy" in SIDE_EFFECT_FREE
 
 
 class TestHelpBodyDrift:

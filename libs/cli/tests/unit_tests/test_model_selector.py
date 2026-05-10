@@ -1,7 +1,9 @@
 """Tests for ModelSelectorScreen."""
 
+from pathlib import Path
 from typing import ClassVar
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
@@ -11,10 +13,31 @@ from textual.widgets import Input, Static
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.model_config import (
     ModelProfileEntry,
+    ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
 )
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+
+@pytest.fixture(autouse=True)
+def _seed_provider_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Seed credentials so dismissal tests aren't blocked by missing keys.
+
+    The selector now opens an auth prompt when the highlighted provider
+    has no key. Most tests in this file just want to assert dismissal
+    behavior, so we seed env vars for the providers their fixtures use
+    and redirect the credential store into a clean temp dir.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # Strip dotenv-loaded prefixed variants so monkeypatched canonical vars
+    # win in `resolve_env_var`'s lookup order.
+    for var in ("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", "DEEPAGENTS_CLI_OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+    )
 
 
 class ModelSelectorTestApp(App):
@@ -842,6 +865,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             status="deprecated",
         )
@@ -859,6 +883,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             status=None,
         )
@@ -873,6 +898,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             status="beta",
         )
@@ -891,6 +917,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             is_default=True,
             status="deprecated",
@@ -935,21 +962,22 @@ class TestFormatOptionLabel:
 class TestFormatAuthIndicator:
     """Tests for provider auth indicator labels."""
 
-    def test_configured_auth_uses_checkmark(self) -> None:
-        """Configured credentials should show an explicit credentials label."""
+    def test_configured_auth_renders_no_indicator(self) -> None:
+        """Configured credentials hide the indicator to keep headers clean."""
         indicator = ModelSelectorScreen._format_auth_indicator(
             ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="openai",
                 env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
             ),
             get_glyphs(),
         )
 
-        assert "credentials set" in indicator
+        assert indicator == ""
 
     def test_ollama_local_auth_has_no_checkmark(self) -> None:
-        """Local Ollama should not reuse the credentials-set checkmark."""
+        """Local Ollama uses its own detail, not the CONFIGURED empty indicator."""
         indicator = ModelSelectorScreen._format_auth_indicator(
             ProviderAuthStatus(
                 state=ProviderAuthState.NOT_REQUIRED,
@@ -1237,3 +1265,50 @@ class TestModelDetailFooter:
             assert len(screen._filtered_models) == 0
             footer = screen.query_one("#model-detail-footer", Static)
             assert "No model selected" in str(footer.content)
+
+
+class TestModelSelectorAuthGate:
+    """Selecting a provider with missing creds opens the auth prompt."""
+
+    async def test_blocked_provider_opens_auth_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enter on a model whose provider has no key opens the prompt."""
+        from deepagents_cli.widgets.auth import AuthPromptScreen
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", raising=False)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthPromptScreen)
+        # Selector did not dismiss; the prompt is in the foreground instead.
+        assert app.dismissed is False
+
+    async def test_save_key_in_prompt_dismisses_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving a key in the prompt dismisses the selector with the model."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", raising=False)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            # Type a key into the auth prompt input and submit
+            from textual.widgets import Input as _Input
+
+            inp = app.screen.query_one("#auth-prompt-input", _Input)
+            inp.value = "stored-from-prompt"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.dismissed is True
+        assert app.result is not None
+        assert app.result[1] == "anthropic"
