@@ -303,11 +303,12 @@ def test_grep_with_path_prefix() -> None:
     assert paths == {"/memories/a.md"}
 
 
-def test_grep_invalid_regex() -> None:
+def test_grep_regex_not_supported() -> None:
+    """use_regex=True returns an error for in-memory backends (ReDoS protection)."""
     backend, _ = _make_backend()
     result = backend.grep("[unclosed", use_regex=True)
     assert result.error is not None
-    assert "Invalid regex" in result.error
+    assert "in-memory" in result.error
 
 
 def test_grep_literal_special_chars_not_treated_as_regex() -> None:
@@ -326,7 +327,8 @@ def test_grep_literal_special_chars_not_treated_as_regex() -> None:
     assert "/a.md" not in paths
 
 
-def test_grep_regex_matches_pattern() -> None:
+def test_grep_regex_not_supported_any_pattern() -> None:
+    """use_regex=True always returns an error for in-memory backends, even with valid patterns."""
     backend, _ = _make_backend(
         **{
             "a.md": FileEntry(type="file", content="def get_user():\n    pass\n"),
@@ -334,11 +336,8 @@ def test_grep_regex_matches_pattern() -> None:
         }
     )
     result = backend.grep("def \\w+_user", use_regex=True)
-    assert result.error is None
-    assert result.matches is not None
-    paths = {m["path"] for m in result.matches}
-    assert "/a.md" in paths
-    assert "/b.md" not in paths
+    assert result.error is not None
+    assert "in-memory" in result.error
 
 
 def test_glob_matches_pattern() -> None:

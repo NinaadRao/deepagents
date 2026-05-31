@@ -531,7 +531,7 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
-    def grep(
+    def grep(  # noqa: C901, PLR0911
         self,
         pattern: str,
         path: str | None = None,
@@ -578,8 +578,13 @@ class FilesystemBackend(BackendProtocol):
         results = self._ripgrep_search(pattern, base_full, glob, use_regex=use_regex)
         partial_error: str | None = None
         if results is None:
-            search_pattern = pattern if use_regex else re.escape(pattern)
-            results, partial_error = self._python_search(search_pattern, base_full, glob)
+            if use_regex:
+                return GrepResult(
+                    error="use_regex=True requires ripgrep, which is unavailable or timed out. "
+                    "Install ripgrep or use use_regex=False for literal search.",
+                    matches=[],
+                )
+            results, partial_error = self._python_search(re.escape(pattern), base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():

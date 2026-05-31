@@ -247,8 +247,13 @@ class ContextHubBackend(BackendProtocol):
             return GrepResult(error=f"Hub unavailable: {exc}")
         matches: list[GrepMatch] = []
 
+        if use_regex:
+            return GrepResult(
+                error="use_regex=True is not supported for in-memory backends (Python's re engine has no "
+                "ReDoS protection). Use use_regex=False for literal search.",
+            )
         try:
-            regex = re.compile(pattern if use_regex else re.escape(pattern))
+            regex = re.compile(re.escape(pattern))
         except re.error as e:
             return GrepResult(error=f"Invalid regex pattern: {e}")
 

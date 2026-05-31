@@ -1252,24 +1252,19 @@ def test_grep_invalid_regex_returns_error(tmp_path: Path) -> None:
     assert "Invalid regex pattern" in result.error
 
 
-def test_grep_regex_python_fallback(tmp_path: Path) -> None:
-    """use_regex=True works through the Python fallback when ripgrep is unavailable."""
+def test_grep_regex_python_fallback_returns_error(tmp_path: Path) -> None:
+    """use_regex=True returns an error when ripgrep is unavailable (ReDoS protection)."""
     (tmp_path / "src.py").write_text("def calculate_total():\n    return 42\n")
-    (tmp_path / "other.py").write_text("unrelated content\n")
 
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
 
     # Force Python fallback by making ripgrep appear unavailable
-    original_ripgrep_search = be._ripgrep_search
     be._ripgrep_search = lambda *_, **__: None  # type: ignore[method-assign]
 
     result = be.grep("def \\w+_total", path="/", use_regex=True)
-    be._ripgrep_search = original_ripgrep_search
 
-    assert result.error is None
-    matched = [m["path"] for m in (result.matches or [])]
-    assert any("src.py" in p for p in matched)
-    assert not any("other.py" in p for p in matched)
+    assert result.error is not None
+    assert "ripgrep" in result.error
 
 
 def test_grep_regex_glob_combined(tmp_path: Path) -> None:

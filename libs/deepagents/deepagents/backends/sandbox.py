@@ -757,7 +757,7 @@ except PermissionError:
         }
         return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
 
-    def grep(
+    def grep(  # noqa: C901
         self,
         pattern: str,
         path: str | None = None,

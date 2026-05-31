@@ -535,32 +535,12 @@ def _make_store_backend() -> StoreBackend:
     return be
 
 
-def test_store_grep_regex_alternation() -> None:
-    """use_regex=True matches alternation patterns."""
+def test_store_grep_regex_not_supported() -> None:
+    """use_regex=True returns an error for in-memory backends (ReDoS protection)."""
     be = _make_store_backend()
     result = be.grep("def (get|set)_value", use_regex=True)
-    assert result.error is None
-    matched = [m["path"] for m in (result.matches or [])]
-    assert any("funcs.py" in p for p in matched)
-    assert not any("other.py" in p for p in matched)
-
-
-def test_store_grep_regex_quantifier() -> None:
-    """use_regex=True matches quantifier patterns."""
-    be = _make_store_backend()
-    result = be.grep("error\\d+", use_regex=True)
-    assert result.error is None
-    matched = [m["path"] for m in (result.matches or [])]
-    assert any("log.py" in p for p in matched)
-    assert not any("funcs.py" in p for p in matched)
-
-
-def test_store_grep_regex_invalid_pattern_returns_error() -> None:
-    """An invalid regex returns a GrepResult with an error field."""
-    be = _make_store_backend()
-    result = be.grep("[invalid", use_regex=True)
     assert result.error is not None
-    assert "Invalid regex pattern" in result.error
+    assert "in-memory" in result.error
 
 
 def test_store_grep_literal_unchanged_with_special_chars() -> None:

@@ -660,19 +660,18 @@ def grep_matches_from_files(
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
 
-    compiled: re.Pattern[str] | None = None
     if use_regex:
-        try:
-            compiled = re.compile(pattern)
-        except re.error as e:
-            return GrepResult(error=f"Invalid regex pattern: {e}", matches=[])
+        return GrepResult(
+            error="use_regex=True is not supported for in-memory backends (Python's re engine has no "
+            "ReDoS protection). Use use_regex=False for literal search.",
+            matches=[],
+        )
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
         content_str = _normalize_content(file_data)
         for line_num, line in enumerate(content_str.split("\n"), 1):
-            hit = bool(compiled.search(line)) if compiled is not None else (pattern in line)
-            if hit:
+            if pattern in line:
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return GrepResult(matches=matches)
 
