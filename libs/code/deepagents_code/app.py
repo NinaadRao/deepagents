@@ -801,7 +801,7 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
-InputMode = Literal["normal", "shell", "shell_incognito", "command"]
+InputMode = Literal["normal", "shell", "shell_incognito", "command", "plan"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
 
@@ -4244,6 +4244,10 @@ class DeepAgentsApp(App):
             await self._handle_command(value)
         elif mode == "normal":
             await self._handle_user_message(value)
+        elif mode == "plan":
+            await self._handle_plan_message(
+                self._strip_mode_value(value, "?", "", mode),
+            )
         else:
             # Fail safe: never default to the agent dispatch path on an
             # unrecognized mode, since that would silently leak `!!`/`!`
@@ -6180,6 +6184,24 @@ class DeepAgentsApp(App):
         # Mount the user message
         await self._mount_message(UserMessage(message))
         await self._send_to_agent(message)
+
+    _PLAN_MODE_INSTRUCTION = (
+        "You are in plan mode. Describe what you would do to complete the task "
+        "below — do not use any tools or execute any commands. Lay out a clear "
+        "step-by-step approach.\n\n"
+    )
+
+    async def _handle_plan_message(self, message: str) -> None:
+        """Handle a plan-mode message (prefixed with `?`).
+
+        Injects a no-tool planning instruction and forwards to the agent.
+        The agent is expected to describe its approach without executing tools.
+
+        Args:
+            message: The user's message with the `?` prefix already stripped.
+        """
+        await self._mount_message(UserMessage(f"? {message}"))
+        await self._send_to_agent(self._PLAN_MODE_INSTRUCTION + message)
 
     async def _send_to_agent(
         self,

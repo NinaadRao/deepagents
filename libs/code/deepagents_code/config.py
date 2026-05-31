@@ -248,6 +248,7 @@ MODE_PREFIXES: dict[str, str] = {
     "shell_incognito": "!!",
     "shell": "!",
     "command": "/",
+    "plan": "?",
 }
 """Maps each non-normal mode to its trigger character."""
 
@@ -255,6 +256,7 @@ MODE_DISPLAY_GLYPHS: dict[str, str] = {
     "shell_incognito": "$",
     "shell": "$",
     "command": "/",
+    "plan": "?",
 }
 """Maps each non-normal mode to its display glyph shown in the prompt/UI."""
 

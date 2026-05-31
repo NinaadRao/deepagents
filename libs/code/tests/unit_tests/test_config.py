@@ -3022,6 +3022,9 @@ class TestDetectModePrefix:
             ("!", ("!", "shell")),
             ("/help", ("/", "command")),
             ("/", ("/", "command")),
+            ("?write a sort function", ("?", "plan")),
+            ("?", ("?", "plan")),
+            ("? explain this", ("?", "plan")),
         ],
     )
     def test_matches_known_prefixes(self, text: str, expected: tuple[str, str]) -> None:
@@ -3029,7 +3032,7 @@ class TestDetectModePrefix:
 
     @pytest.mark.parametrize(
         "text",
-        ["", "ls", "echo hi", " !!ls", "\t!ls", "hello !!", "x!"],
+        ["", "ls", "echo hi", " !!ls", "\t!ls", "hello !!", "x!", "what?", "a?b"],
     )
     def test_no_match_for_non_prefixed(self, text: str) -> None:
         assert detect_mode_prefix(text) is None
