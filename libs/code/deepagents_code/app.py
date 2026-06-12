@@ -5463,6 +5463,7 @@ class DeepAgentsApp(App):
                 "  Ctrl+X          Open prompt in external editor\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
+                "  Ctrl+V          Paste image from clipboard (macOS)\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n"
