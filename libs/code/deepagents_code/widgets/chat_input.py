@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -340,6 +341,13 @@ class ChatTextArea(TextArea):
             "Delete left to start of word",
             show=False,
         ),
+        Binding(
+            "ctrl+v",
+            "paste_image_from_clipboard",
+            "Paste Image",
+            show=False,
+            priority=True,
+        ),
     ]
     """Key bindings for the chat text area.
 
@@ -584,6 +592,24 @@ class ChatTextArea(TextArea):
     def action_insert_newline(self) -> None:
         """Insert a newline character."""
         self.insert("\n")
+
+    async def action_paste_image_from_clipboard(self) -> None:
+        """Paste an image from the system clipboard (triggered by Ctrl+V)."""
+        if sys.platform != "darwin":
+            return
+
+        from deepagents_code.media_utils import get_clipboard_image
+
+        image_data = await asyncio.to_thread(get_clipboard_image)
+        if image_data is None:
+            return
+        if self._chat_input_owner is None:
+            return
+        tracker = self._chat_input_owner._image_tracker
+        if tracker is None:
+            return
+        placeholder = tracker.add_media(image_data, "image")
+        self.insert(placeholder + " ")
         # TextArea's built-in cursor-visible scroll runs before the widget
         # reflows for the new row, so it sees stale dimensions and is a no-op
         # when the cursor would land below `max-height`. Re-issue after
@@ -915,23 +941,6 @@ class ChatTextArea(TextArea):
         self._backslash_pending_time = None
         if self._paste_burst_buffer:
             await self._flush_paste_burst()
-
-        # On macOS, "Copy Image" (e.g. right-click → Copy Image in a browser)
-        # puts binary data in the clipboard that terminals cannot forward as
-        # text.  The paste event fires with empty text while the image lives in
-        # the system clipboard — read it directly via pngpaste / osascript.
-        if not event.text and self._chat_input_owner is not None:
-            from deepagents_code.media_utils import get_clipboard_image
-
-            image_data = await asyncio.to_thread(get_clipboard_image)
-            if image_data is not None:
-                tracker = self._chat_input_owner._image_tracker
-                if tracker is not None:
-                    placeholder = tracker.add_media(image_data, "image")
-                    self.insert(placeholder + " ")
-                    event.prevent_default()
-                    event.stop()
-                    return
 
         from deepagents_code.input import parse_pasted_path_payload
 

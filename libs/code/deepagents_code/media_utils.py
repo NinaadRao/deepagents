@@ -116,8 +116,8 @@ def get_clipboard_image() -> ImageData | None:
         return _get_macos_clipboard_image()
     logger.warning(
         "Clipboard image paste is not supported on %s. "
-        "Only macOS is currently supported. "
-        "You can still attach images by dragging and dropping file paths.",
+        "Only macOS is currently supported (use Ctrl+V after copying an image). "
+        "You can also attach images by dragging and dropping file paths.",
         sys.platform,
     )
     return None
