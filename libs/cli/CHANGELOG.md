@@ -4,6 +4,45 @@
 
 From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and `mcp-servers` against the Managed Deep Agents `/v1/deepagents/*` API. The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
 
+## [0.1.0](https://github.com/NinaadRao/deepagents/compare/deepagents-cli==0.2.2...deepagents-cli==0.1.0) (2026-06-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `deepagents deploy` now targets the Managed Deep Agents API; `deepagents dev`, `deepagents.toml`, and the `--config`/`--dry-run` flags are removed. Run `deepagents init` to re-scaffold (`agent.json` + `tools.json`). See [PR](https://github.com/langchain-ai/deepagents/pull/3609) for the full migration guide.
+* **cli:** removes the interactive TUI / coding-agent surface from `deepagents-cli`. The package now only ships the `deploy` command and supporting config. Users relying on the chat REPL, sessions, MCP tooling, skills, and related widgets should migrate to `deepagents-code`.
+
+### Features
+
+* **cli:** add `--host` option to `deepagents dev` command ([#3444](https://github.com/NinaadRao/deepagents/issues/3444)) ([0bb1e74](https://github.com/NinaadRao/deepagents/commit/0bb1e74bba8097b38f204e3db6e6ebad7e0f5317))
+* **cli:** add docs link to project MCP approval prompt ([#3341](https://github.com/NinaadRao/deepagents/issues/3341)) ([b5c1228](https://github.com/NinaadRao/deepagents/commit/b5c12280e47bc37938290a4219317f47c1abfa8a))
+* **cli:** add terminal OSC 9;4 progress & escape helper ([#3347](https://github.com/NinaadRao/deepagents/issues/3347)) ([75d60cd](https://github.com/NinaadRao/deepagents/commit/75d60cd82f559b2944b78a348d16b0a10a00d663))
+* **cli:** free-text reject reason on HITL approval prompt ([#3344](https://github.com/NinaadRao/deepagents/issues/3344)) ([dcc48f4](https://github.com/NinaadRao/deepagents/commit/dcc48f48d20757f17011e65b61363dd0347af164))
+* **cli:** migrate deepagents deploy to use managed deep agents api [AB-2470] ([#3609](https://github.com/NinaadRao/deepagents/issues/3609)) ([72aef52](https://github.com/NinaadRao/deepagents/commit/72aef52542a3fd4a7eebcb3dba40e28adf1aa044))
+* **cli:** remove coding agent ([#3422](https://github.com/NinaadRao/deepagents/issues/3422)) ([c7b3119](https://github.com/NinaadRao/deepagents/commit/c7b311933da6245267f4bded050c36279973de1e))
+* **code:** port from `libs/cli` ([#3388](https://github.com/NinaadRao/deepagents/issues/3388)) ([2ac7d41](https://github.com/NinaadRao/deepagents/commit/2ac7d4153398889100d5fd163ab4a122633862b5))
+* **sdk:** surface subagents via inherited `lc_agent_name` projection ([e0a1ed2](https://github.com/NinaadRao/deepagents/commit/e0a1ed24e6b44c31d0aac3358aeee0d6cb66b2c4))
+* **sdk:** v0.6 ([4db09ac](https://github.com/NinaadRao/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+
+
+### Bug Fixes
+
+* **ci,deps:** harden manual releases and update `python-multipart` ([#3383](https://github.com/NinaadRao/deepagents/issues/3383)) ([a5da793](https://github.com/NinaadRao/deepagents/commit/a5da793a78fcd8e9dc47a6cc1f5d62b9eb049543))
+* **cli:** add `together` provider to bundler deps and optional extras ([#2670](https://github.com/NinaadRao/deepagents/issues/2670)) ([4290953](https://github.com/NinaadRao/deepagents/commit/4290953e44570ec02399e4d423ab4ffd24e97609))
+* **cli:** dedupe MCP servers in project trust approval prompt ([#3342](https://github.com/NinaadRao/deepagents/issues/3342)) ([73484ea](https://github.com/NinaadRao/deepagents/commit/73484ea551189985190f52cb26b299819d3fc37d))
+* **cli:** expand `${VAR}` in `mcp.json` header values ([#3523](https://github.com/NinaadRao/deepagents/issues/3523)) ([6cfc5f9](https://github.com/NinaadRao/deepagents/commit/6cfc5f9004271c23c486a0b05e8f9f0002e75e2b))
+* **cli:** prevent import deadlock during skill discovery and prewarm ([#3385](https://github.com/NinaadRao/deepagents/issues/3385)) ([0bf8dd1](https://github.com/NinaadRao/deepagents/commit/0bf8dd1cfd680bd4d27ce19295f96c720f525787))
+* **cli:** remove legacy shell tool aliases and harden HITL widget cleanup ([#3340](https://github.com/NinaadRao/deepagents/issues/3340)) ([398f7f4](https://github.com/NinaadRao/deepagents/commit/398f7f4512182a8e51cbdfbfb9dc211c77014e2b))
+* **cli:** support `state` deploy backend ([#3790](https://github.com/NinaadRao/deepagents/issues/3790)) ([04b4bb9](https://github.com/NinaadRao/deepagents/commit/04b4bb946fc5ff914b8cccc8c9543d10533de0f8))
+* **cli:** suppress LangSmith trace for `_context_tokens` state writes ([#3317](https://github.com/NinaadRao/deepagents/issues/3317)) ([63db13e](https://github.com/NinaadRao/deepagents/commit/63db13ee262d19a1a87fbe4df1271a2e958deed6))
+* **cli:** truncate multi-line shell commands in HITL approval ([#3314](https://github.com/NinaadRao/deepagents/issues/3314)) ([7ab6e14](https://github.com/NinaadRao/deepagents/commit/7ab6e14565d6dd9d9c9e76d9d6677e5568a727f7))
+* **sdk:** stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/NinaadRao/deepagents/issues/3591)) ([82c3194](https://github.com/NinaadRao/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
+
+
+### Performance Improvements
+
+* **cli:** gate dropped-path detection on multi-character insert size ([#3343](https://github.com/NinaadRao/deepagents/issues/3343)) ([06a21e8](https://github.com/NinaadRao/deepagents/commit/06a21e8a69738b7ba055d2f13dae4cd9fab353cd))
+
 ## [0.2.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.1...deepagents-cli==0.2.2) (2026-06-07)
 
 
