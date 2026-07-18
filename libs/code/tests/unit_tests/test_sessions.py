@@ -3097,3 +3097,350 @@ class TestInitialPromptFromMessages:
             ]
         )
         assert result == ""
+
+
+class TestExportThreadEvents:
+    """Tests for `export_thread_events`, the `threads export` data source."""
+
+    @staticmethod
+    def _make_db(
+        tmp_path: Path, thread_id: str, writes: list[tuple[str, list]]
+    ) -> Path:
+        """Build a temp DB with a `checkpoints` row and ordered `writes` rows.
+
+        Args:
+            tmp_path: pytest tmp dir.
+            thread_id: Thread the rows belong to.
+            writes: `(checkpoint_id, messages)` pairs, oldest first. Each
+                `messages` list is serialized as one `messages`-channel write
+                under that checkpoint. A matching `checkpoints` row (with an
+                `updated_at` derived from its position) is created for every
+                distinct checkpoint_id so the export's timestamp join resolves.
+
+        Returns:
+            Path to the database file.
+        """
+        db_path = tmp_path / "export_test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                type TEXT,
+                checkpoint BLOB,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+
+        serde = JsonPlusSerializer()
+        seen_checkpoints: set[str] = set()
+        for position, (checkpoint_id, messages) in enumerate(writes):
+            if checkpoint_id not in seen_checkpoints:
+                seen_checkpoints.add(checkpoint_id)
+                updated_at = f"2026-01-01T00:00:{position:02d}+00:00"
+                conn.execute(
+                    "INSERT INTO checkpoints "
+                    "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                    "VALUES (?, '', ?, ?)",
+                    (thread_id, checkpoint_id, json.dumps({"updated_at": updated_at})),
+                )
+            type_str, value_blob = serde.dumps_typed(messages)
+            conn.execute(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                (thread_id, checkpoint_id, f"task_{position}", type_str, value_blob),
+            )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    async def test_recovers_tool_call_and_result(self, tmp_path: Path) -> None:
+        """A single checkpoint carrying both the call and its result exports."""
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        db_path = self._make_db(
+            tmp_path,
+            "t1",
+            [
+                (
+                    "cp_a",
+                    [
+                        AIMessage(
+                            content="",
+                            id="a1",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": "ls"},
+                                    "id": "call_1",
+                                }
+                            ],
+                        ),
+                        ToolMessage(
+                            content="file1\nfile2", tool_call_id="call_1", id="t1"
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            events = await sessions.export_thread_events("t1")
+
+        assert len(events) == 1
+        event = events[0]
+        assert event["tool"] == "execute"
+        assert event["args"] == {"command": "ls"}
+        assert event["tool_call_id"] == "call_1"
+        assert event["result"] == "file1\nfile2"
+        assert event["has_result"] is True
+        assert event["checkpoint_id"] == "cp_a"
+        assert event["timestamp"] == "2026-01-01T00:00:00+00:00"
+
+    async def test_recovers_tool_calls_across_delta_checkpoints(
+        self, tmp_path: Path
+    ) -> None:
+        """A call and its result split across checkpoint writes still pair up."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        db_path = self._make_db(
+            tmp_path,
+            "t1",
+            [
+                ("cp_a", [HumanMessage(content="list files", id="h1")]),
+                (
+                    "cp_b",
+                    [
+                        AIMessage(
+                            content="",
+                            id="a1",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": "ls"},
+                                    "id": "call_1",
+                                }
+                            ],
+                        )
+                    ],
+                ),
+                (
+                    "cp_c",
+                    [
+                        ToolMessage(
+                            content="file1\nfile2", tool_call_id="call_1", id="t1"
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            events = await sessions.export_thread_events("t1")
+
+        assert len(events) == 1
+        event = events[0]
+        assert event["checkpoint_id"] == "cp_b"
+        assert event["result"] == "file1\nfile2"
+        assert event["has_result"] is True
+
+    async def test_call_without_result_has_result_false(self, tmp_path: Path) -> None:
+        """A tool call with no later `ToolMessage` still exports, unresolved."""
+        from langchain_core.messages import AIMessage
+
+        db_path = self._make_db(
+            tmp_path,
+            "t1",
+            [
+                (
+                    "cp_a",
+                    [
+                        AIMessage(
+                            content="",
+                            id="a1",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": "rm x"},
+                                    "id": "call_1",
+                                }
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            events = await sessions.export_thread_events("t1")
+
+        assert len(events) == 1
+        assert events[0]["has_result"] is False
+        assert events[0]["result"] is None
+
+    async def test_multiple_tool_calls_in_one_message_all_export(
+        self, tmp_path: Path
+    ) -> None:
+        """An `AIMessage` with several tool calls yields one event per call."""
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        db_path = self._make_db(
+            tmp_path,
+            "t1",
+            [
+                (
+                    "cp_a",
+                    [
+                        AIMessage(
+                            content="",
+                            id="a1",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {"path": "a.py"},
+                                    "id": "c1",
+                                },
+                                {
+                                    "name": "read_file",
+                                    "args": {"path": "b.py"},
+                                    "id": "c2",
+                                },
+                            ],
+                        ),
+                        ToolMessage(content="contents-a", tool_call_id="c1", id="t1"),
+                        ToolMessage(content="contents-b", tool_call_id="c2", id="t2"),
+                    ],
+                )
+            ],
+        )
+
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            events = await sessions.export_thread_events("t1")
+
+        assert len(events) == 2
+        by_call_id = {e["tool_call_id"]: e for e in events}
+        assert by_call_id["c1"]["result"] == "contents-a"
+        assert by_call_id["c2"]["result"] == "contents-b"
+
+    async def test_unknown_thread_id_raises(self, tmp_path: Path) -> None:
+        """Exporting a thread that was never checkpointed raises `ValueError`."""
+        db_path = self._make_db(tmp_path, "t1", [])
+        with (
+            patch.object(sessions, "get_db_path", return_value=db_path),
+            pytest.raises(ValueError, match="not found"),
+        ):
+            await sessions.export_thread_events("does-not-exist")
+
+
+class TestExportThreadCommand:
+    """Tests for the `threads export` CLI handler."""
+
+    async def test_jsonl_output(self) -> None:
+        """Default `event_format='jsonl'` writes one JSON object per event."""
+        import io
+
+        events: list[sessions.ThreadEvent] = [
+            {
+                "checkpoint_id": "cp_a",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "tool": "execute",
+                "args": {"command": "ls"},
+                "tool_call_id": "call_1",
+                "result": "ok",
+                "has_result": True,
+            }
+        ]
+        buf = io.StringIO()
+        with (
+            patch.object(
+                sessions,
+                "export_thread_events",
+                new=AsyncMock(return_value=events),
+            ),
+            patch("sys.stdout", buf),
+        ):
+            await sessions.export_thread_command("t1")
+
+        line = buf.getvalue().strip()
+        decoded = json.loads(line)
+        assert decoded["tool"] == "execute"
+        assert decoded["tool_call_id"] == "call_1"
+
+    async def test_json_envelope_output(self) -> None:
+        """`output_format='json'` wraps events in the standard envelope."""
+        import io
+
+        events: list[sessions.ThreadEvent] = [
+            {
+                "checkpoint_id": "cp_a",
+                "timestamp": None,
+                "tool": "execute",
+                "args": {},
+                "tool_call_id": "call_1",
+                "result": None,
+                "has_result": False,
+            }
+        ]
+        buf = io.StringIO()
+        with (
+            patch.object(
+                sessions,
+                "export_thread_events",
+                new=AsyncMock(return_value=events),
+            ),
+            patch("sys.stdout", buf),
+        ):
+            await sessions.export_thread_command("t1", output_format="json")
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "threads export"
+        assert result["data"][0]["tool"] == "execute"
+
+    async def test_unknown_thread_id_errors_cleanly(self) -> None:
+        """A missing thread prints a clean message instead of a traceback."""
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch.object(
+                sessions,
+                "export_thread_events",
+                new=AsyncMock(side_effect=ValueError("Thread 'missing' not found")),
+            ),
+            patch("sys.stdout", buf),
+        ):
+            await sessions.export_thread_command("missing")
+
+        assert "not found" in buf.getvalue()
+
+    async def test_unknown_thread_id_errors_cleanly_json(self) -> None:
+        """A missing thread reports `error: not_found` in JSON mode."""
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch.object(
+                sessions,
+                "export_thread_events",
+                new=AsyncMock(side_effect=ValueError("not found")),
+            ),
+            patch("sys.stdout", buf),
+        ):
+            await sessions.export_thread_command("missing", output_format="json")
+
+        result = json.loads(buf.getvalue())
+        assert result["data"]["error"] == "not_found"

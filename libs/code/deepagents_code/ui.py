@@ -832,6 +832,7 @@ def show_threads_help() -> None:
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all threads")
     console.print("  delete <ID>       Delete a thread")
+    console.print("  export <ID>       Export a thread's tool-call history")
     console.print()
     _print_option_section()
     console.print()
@@ -840,6 +841,7 @@ def show_threads_help() -> None:
     console.print("  dcode threads list -n 10")
     console.print("  dcode threads list --agent mybot")
     console.print("  dcode threads delete abc123")
+    console.print("  dcode threads export abc123")
     console.print()
 
 
@@ -856,6 +858,23 @@ def show_threads_delete_help() -> None:
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode threads delete abc123")
     console.print("  dcode threads delete abc123 --dry-run")
+    console.print()
+
+
+def show_threads_export_help() -> None:
+    """Show help information for the `threads export` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode threads export <ID> [options]")
+    console.print()
+    _print_option_section(
+        "  --format {jsonl,text}   Per-event output shape (default: jsonl)",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode threads export abc123")
+    console.print("  dcode threads export abc123 --format text")
+    console.print("  dcode threads export abc123 --json")
     console.print()
 
 

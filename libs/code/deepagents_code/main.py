@@ -1667,6 +1667,22 @@ def parse_args() -> argparse.Namespace:
         help="Show what would happen without making changes",
     )
 
+    threads_export = threads_sub.add_parser(
+        "export",
+        help="Export a thread's tool-call history",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_threads_export_help")),
+    )
+    add_json_output_arg(threads_export)
+    threads_export.add_argument("thread_id", help="Thread ID to export")
+    threads_export.add_argument(
+        "--format",
+        dest="event_format",
+        choices=["jsonl", "text"],
+        default="jsonl",
+        help="Per-event output shape (default: jsonl)",
+    )
+
     update_parser = subparsers.add_parser(
         "update",
         help="Check for and install updates",
@@ -4272,6 +4288,7 @@ def cli_main() -> None:
         elif args.command == "threads":
             from deepagents_code.sessions import (
                 delete_thread_command,
+                export_thread_command,
                 list_threads_command,
             )
             from deepagents_code.ui import show_threads_help
@@ -4314,6 +4331,14 @@ def cli_main() -> None:
                     delete_thread_command(
                         args.thread_id,
                         dry_run=args.dry_run,
+                        output_format=output_format,
+                    )
+                )
+            elif args.threads_command == "export":
+                asyncio.run(
+                    export_thread_command(
+                        args.thread_id,
+                        event_format=args.event_format,
                         output_format=output_format,
                     )
                 )

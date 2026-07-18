@@ -9,7 +9,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NotRequired, TypedDict, cast
 
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 
@@ -146,6 +146,34 @@ class ThreadInfo(TypedDict):
 
     cwd: NotRequired[str | None]
     """Working directory where the thread was last used."""
+
+
+class ThreadEvent(TypedDict):
+    """One tool call recovered from a thread's persisted message history."""
+
+    checkpoint_id: str | None
+    """Checkpoint the tool-call message was written under."""
+
+    timestamp: str | None
+    """`updated_at` of that checkpoint (multiple events in the same checkpoint
+    share a timestamp; the `writes` table has no finer-grained clock)."""
+
+    tool: str
+    """Tool name from the `AIMessage` tool call."""
+
+    args: dict[str, object]
+    """Tool call arguments."""
+
+    tool_call_id: str
+    """Tool call ID, for correlating with its `ToolMessage` result."""
+
+    result: str | None
+    """`ToolMessage` content, or `None` if no result was ever recorded (the
+    call is still pending, or the run ended before it resolved — this
+    includes a rejected-by-user call today; see `export_thread_events`)."""
+
+    has_result: bool
+    """Whether a matching `ToolMessage` was found for this call."""
 
 
 class _CheckpointSummary(NamedTuple):
@@ -1149,6 +1177,20 @@ def _incremental_message_count(deltas: list[Any]) -> int:
     Returns:
         Number of messages after the sequential fold.
     """
+    return len(_fold_message_deltas(deltas))
+
+
+def _fold_message_deltas(deltas: list[Any]) -> list[Any]:
+    """Sequentially fold `messages`-channel write deltas into the message list.
+
+    Exact reference reduction: applies one delta at a time, resetting on
+    `Overwrite` and skipping any delta the reducer rejects (e.g. a delete for an
+    absent ID). Shared by `_incremental_message_count` (which only needs the
+    length) and `export_thread_events` (which needs the actual messages).
+
+    Returns:
+        The reduced message list.
+    """
     from langgraph.graph.message import add_messages
     from langgraph.types import Overwrite
 
@@ -1166,7 +1208,7 @@ def _incremental_message_count(deltas: list[Any]) -> int:
                 exc_info=True,
             )
             continue
-    return len(reduced)
+    return reduced
 
 
 def _summarize_checkpoint(data: object) -> _CheckpointSummary:
@@ -1259,6 +1301,193 @@ def _coerce_prompt_text(content: object) -> str | None:
     if content is None:
         return None
     return str(content)
+
+
+def _message_id(msg: object) -> str | None:
+    """Return a message's `id`, handling both `BaseMessage` and dict shapes."""
+    value = msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
+    return value if isinstance(value, str) else None
+
+
+def _message_type(msg: object) -> str | None:
+    """Return a message's `type`, handling both `BaseMessage` and dict shapes."""
+    value = msg.get("type") if isinstance(msg, dict) else getattr(msg, "type", None)
+    return value if isinstance(value, str) else None
+
+
+def _message_tool_calls(msg: object) -> list[dict[str, Any]]:
+    """Return an `AIMessage`'s tool calls, or `[]` for any other message type."""
+    if _message_type(msg) != "ai":
+        return []
+    calls = (
+        msg.get("tool_calls")
+        if isinstance(msg, dict)
+        else getattr(msg, "tool_calls", None)
+    )
+    if not isinstance(calls, list):
+        return []
+    return [cast("dict[str, Any]", call) for call in calls if isinstance(call, dict)]
+
+
+def _message_tool_result(msg: object) -> tuple[str, str] | None:
+    """Return `(tool_call_id, content)` for a `ToolMessage`, else `None`."""
+    if _message_type(msg) != "tool":
+        return None
+    call_id = (
+        msg.get("tool_call_id")
+        if isinstance(msg, dict)
+        else getattr(msg, "tool_call_id", None)
+    )
+    if not isinstance(call_id, str):
+        return None
+    content = (
+        msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+    )
+    return call_id, _coerce_prompt_text(content) or ""
+
+
+def _build_thread_events(
+    rows: list[tuple[str, str | None, bytes | None, str | None]],
+    serde: JsonPlusSerializer,
+) -> list[ThreadEvent]:
+    """Replay ordered `messages`-channel write rows into tool-call events.
+
+    Runs synchronously (in a worker thread, from `export_thread_events`).
+    Folds deltas the same way as `_fold_message_deltas`, but instead of only
+    keeping the final message count, this diffs the buffer after each delta to
+    find newly-added messages and turns each new `AIMessage` tool call into a
+    pending `ThreadEvent`, filled in once a matching `ToolMessage` shows up.
+
+    A tool call that never gets a matching `ToolMessage` (the run ended before
+    it resolved, or — today — the user rejected it; see the module-level note
+    on `export_thread_events` about why rejections aren't distinguishable from
+    "no result yet") is still returned, with `has_result=False`.
+
+    Args:
+        rows: `(checkpoint_id, type, value, timestamp)` tuples for one thread's
+            `messages`-channel writes, already ordered oldest-to-newest.
+        serde: Serializer for decoding write blobs.
+
+    Returns:
+        Tool-call events in the order their originating message first appeared.
+    """
+    from langgraph.graph.message import add_messages
+    from langgraph.types import Overwrite
+
+    events: list[ThreadEvent] = []
+    pending_by_call_id: dict[str, ThreadEvent] = {}
+    seen_ids: set[str] = set()
+    buffer: list[Any] = []
+    last_timestamp: str | None = None
+
+    for checkpoint_id, type_str, value_blob, timestamp in rows:
+        if timestamp:
+            last_timestamp = timestamp
+        if not type_str or not value_blob:
+            continue
+        try:
+            delta = serde.loads_typed((type_str, value_blob))
+        except Exception:
+            logger.warning(
+                "Failed to replay a messages write while exporting thread events",
+                exc_info=True,
+            )
+            continue
+
+        if isinstance(delta, Overwrite):
+            value = delta.value
+            buffer = list(value) if isinstance(value, list) else []
+        else:
+            try:
+                buffer = cast("list[Any]", add_messages(buffer, delta))
+            except Exception:
+                logger.warning(
+                    "Failed to replay a messages write while exporting thread events",
+                    exc_info=True,
+                )
+                continue
+
+        for msg in buffer:
+            msg_id = _message_id(msg)
+            if msg_id is None or msg_id in seen_ids:
+                continue
+            seen_ids.add(msg_id)
+
+            for call in _message_tool_calls(msg):
+                call_id = call.get("id")
+                event = ThreadEvent(
+                    checkpoint_id=checkpoint_id,
+                    timestamp=last_timestamp,
+                    tool=str(call.get("name", "")),
+                    args=cast("dict[str, Any]", call.get("args") or {}),
+                    tool_call_id=call_id if isinstance(call_id, str) else "",
+                    result=None,
+                    has_result=False,
+                )
+                events.append(event)
+                if event["tool_call_id"]:
+                    pending_by_call_id[event["tool_call_id"]] = event
+
+            result = _message_tool_result(msg)
+            if result is not None:
+                call_id, content = result
+                pending = pending_by_call_id.pop(call_id, None)
+                if pending is not None:
+                    pending["result"] = content
+                    pending["has_result"] = True
+
+    return events
+
+
+async def export_thread_events(thread_id: str) -> list[ThreadEvent]:
+    """Reconstruct a thread's tool-call/result history from persisted writes.
+
+    Replays every write to the root-namespace `messages` channel (the same
+    source `_load_message_counts_from_writes_batch` reconstructs counts from)
+    to recover the full message list, then pairs each `AIMessage` tool call
+    with its `ToolMessage` result.
+
+    Approval provenance (whether a call was auto-approved, manually approved,
+    or rejected) is deliberately not included here. A HITL interrupt is
+    surfaced to the client via the `__interrupt__` stream event and resolved
+    with `Command(resume=...)`, not through the `messages` channel — and on
+    rejection the TUI (`tui/textual_adapter.py`) ends the turn without ever
+    submitting that `Command`, so there is no reliably-persisted record to
+    read back for a rejected call. A rejected call and a call the run simply
+    never got to both show up here as `has_result=False`. Recovering approval
+    provenance would need to read the checkpoint's task/interrupt metadata
+    directly (`checkpointer.aget_tuple`), which is a distinct follow-up.
+
+    Args:
+        thread_id: Thread to export.
+
+    Returns:
+        Tool-call events ordered oldest-to-newest.
+
+    Raises:
+        ValueError: If no thread with this ID exists.
+    """
+    if not await thread_exists(thread_id):
+        msg = f"Thread {thread_id!r} not found"
+        raise ValueError(msg)
+
+    serde = await _get_jsonplus_serializer()
+
+    async with _connect() as conn:
+        query = """
+            SELECT w.checkpoint_id, w.type, w.value,
+                   json_extract(c.metadata, '$.updated_at') AS ts
+            FROM writes w
+            LEFT JOIN checkpoints c
+              ON c.thread_id = w.thread_id AND c.checkpoint_id = w.checkpoint_id
+            WHERE w.thread_id = ? AND w.checkpoint_ns = '' AND w.channel = 'messages'
+            ORDER BY w.checkpoint_id ASC, w.task_id ASC, w.idx ASC
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            rows = await cursor.fetchall()
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _build_thread_events, list(rows), serde)
 
 
 async def get_most_recent(
@@ -1725,3 +1954,86 @@ async def delete_thread_command(
             f"Thread '{escaped_id}' not found or already deleted.",
             style=theme.MUTED,
         )
+
+
+async def export_thread_command(
+    thread_id: str,
+    *,
+    event_format: Literal["jsonl", "text"] = "jsonl",
+    output_format: OutputFormat = "text",
+) -> None:
+    """CLI handler for: deepagents threads export.
+
+    Args:
+        thread_id: ID of the thread to export.
+        event_format: Per-event output shape. `'jsonl'` (the default) writes
+            one JSON object per tool call for piping into `jq`/log tooling.
+            `'text'` renders a Rich summary table instead.
+        output_format: `'json'` wraps the full event list in the standard
+            `write_json` envelope used by every other `threads` subcommand's
+            `--json` flag, and takes precedence over `event_format`.
+    """
+    from rich.markup import escape as escape_markup
+
+    from deepagents_code.config import console
+
+    escaped_id = escape_markup(thread_id)
+
+    try:
+        events = await export_thread_events(thread_id)
+    except ValueError:
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json("threads export", {"thread_id": thread_id, "error": "not_found"})
+            return
+        console.print(f"Thread '{escaped_id}' not found.")
+        return
+
+    if output_format == "json":
+        from deepagents_code.output import write_json
+
+        write_json("threads export", cast("list[Any]", events))
+        return
+
+    if event_format == "jsonl":
+        import json
+        import sys
+
+        for event in events:
+            sys.stdout.write(json.dumps(event, default=str) + "\n")
+        sys.stdout.flush()
+        return
+
+    from rich.table import Table
+
+    from deepagents_code import theme
+
+    if not events:
+        console.print("[yellow]No tool calls recorded for this thread.[/yellow]")
+        return
+
+    import json
+
+    table = Table(
+        title=f"Tool calls for {escaped_id}",
+        show_header=True,
+        header_style=f"bold {theme.PRIMARY}",
+    )
+    table.add_column("Time")
+    table.add_column("Tool")
+    table.add_column("Args", max_width=40, no_wrap=True)
+    table.add_column("Result", max_width=40, no_wrap=True)
+
+    for event in events:
+        result_cell = event["result"] if event["has_result"] else "(no result)"
+        table.add_row(
+            format_timestamp(event["timestamp"]),
+            event["tool"],
+            json.dumps(event["args"], default=str),
+            result_cell or "",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
