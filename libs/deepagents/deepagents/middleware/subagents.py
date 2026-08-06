@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import json
+import logging
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -29,8 +30,39 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
 
+logger = logging.getLogger(__name__)
+
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
+
+
+class SubAgentCompletionContext(TypedDict):
+    """Context passed to each `after_subagent_hooks` callable.
+
+    Fired in the parent's runtime after a synchronous `task`/`atask` subagent
+    invocation completes, whether it succeeded or raised. Lets the supervisor
+    run post-processing (reducers, state projections, audit writes, cache
+    invalidation) without hardcoding `tool_call["name"] == "task"` checks
+    against the built-in task tool.
+    """
+
+    subagent_type: str
+    """The `name` of the invoked `SubAgent`/`CompiledSubAgent`."""
+
+    description: str
+    """The task description the parent passed to the subagent."""
+
+    tool_call_id: str
+    """The parent's `task` tool call ID, for correlating parallel invocations."""
+
+    result: dict[str, Any] | None
+    """The subagent's raw output state on success; `None` on error."""
+
+    runtime: ToolRuntime
+    """The parent's `ToolRuntime`, for access to parent-level state and stores."""
+
+    error: NotRequired[BaseException | None]
+    """The exception raised by the subagent invocation. Only present on failure."""
 
 
 class SubAgent(TypedDict):
@@ -405,6 +437,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     *,
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
+    after_subagent_hooks: Sequence[Callable[[SubAgentCompletionContext], None]] = (),
 ) -> BaseTool:
     """Create a task tool from subagent specs.
 
@@ -415,10 +448,21 @@ def _build_task_tool(  # noqa: C901, PLR0915
         private_state_keys: State keys marked with `PrivateStateAttr` that
             should be stripped from parent state before invoking subagents.
         state_schema: Base graph state schema forwarded to raw subagent specs.
+        after_subagent_hooks: Callables invoked with a `SubAgentCompletionContext`
+            after each synchronous `task`/`atask` invocation completes, whether
+            it succeeded or raised. Exceptions raised by a hook are logged and
+            suppressed; do not use hooks to enforce control flow.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
+
+    def _fire_after_subagent_hooks(context: SubAgentCompletionContext) -> None:
+        for hook in after_subagent_hooks:
+            try:
+                hook(context)
+            except Exception:
+                logger.exception("SubAgentMiddleware after_subagent hook raised")
 
     def _compile_spec(
         spec: SubAgent | CompiledSubAgent,
@@ -563,9 +607,34 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # Forwarding those keys explicitly would double-count under the merge
         # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            with _subagent_tracing_context():
+                result = subagent.invoke(subagent_state, subagent_config)
+            command = _return_command_with_state_update(result, runtime.tool_call_id)
+        except Exception as exc:
+            if after_subagent_hooks:
+                _fire_after_subagent_hooks(
+                    {
+                        "subagent_type": subagent_type,
+                        "description": description,
+                        "tool_call_id": runtime.tool_call_id,
+                        "result": None,
+                        "runtime": runtime,
+                        "error": exc,
+                    }
+                )
+            raise
+        if after_subagent_hooks:
+            _fire_after_subagent_hooks(
+                {
+                    "subagent_type": subagent_type,
+                    "description": description,
+                    "tool_call_id": runtime.tool_call_id,
+                    "result": result,
+                    "runtime": runtime,
+                }
+            )
+        return command
 
     async def atask(
         description: str,
@@ -591,9 +660,34 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # Forwarding those keys explicitly would double-count under the merge
         # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            with _subagent_tracing_context():
+                result = await subagent.ainvoke(subagent_state, subagent_config)
+            command = _return_command_with_state_update(result, runtime.tool_call_id)
+        except Exception as exc:
+            if after_subagent_hooks:
+                _fire_after_subagent_hooks(
+                    {
+                        "subagent_type": subagent_type,
+                        "description": description,
+                        "tool_call_id": runtime.tool_call_id,
+                        "result": None,
+                        "runtime": runtime,
+                        "error": exc,
+                    }
+                )
+            raise
+        if after_subagent_hooks:
+            _fire_after_subagent_hooks(
+                {
+                    "subagent_type": subagent_type,
+                    "description": description,
+                    "tool_call_id": runtime.tool_call_id,
+                    "result": result,
+                    "runtime": runtime,
+                }
+            )
+        return command
 
     return StructuredTool.from_function(
         name="task",
@@ -635,6 +729,13 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Leave unset to use `create_agent`'s default. `CompiledSubAgent`
             entries are unaffected — callers own those runnables' schemas.
+        after_subagent_hooks: Callables invoked with a
+            [`SubAgentCompletionContext`][deepagents.middleware.subagents.SubAgentCompletionContext]
+            after each synchronous `task`/`atask` invocation completes,
+            whether it succeeded or raised.
+
+            Exceptions raised by a hook are logged and suppressed; do not use
+            hooks to enforce control flow.
 
     Example:
         ```python
@@ -671,6 +772,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
+        after_subagent_hooks: Sequence[Callable[[SubAgentCompletionContext], None]] = (),
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -683,6 +785,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
+        self._after_subagent_hooks = after_subagent_hooks
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
@@ -692,6 +795,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description,
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
+            after_subagent_hooks=self._after_subagent_hooks,
         )
 
         # Build system prompt with available agents
@@ -716,6 +820,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description=self._task_description,
             private_state_keys=value,
             state_schema=self._state_schema,
+            after_subagent_hooks=self._after_subagent_hooks,
         )
         self.tools = [task_tool]
 

@@ -12,6 +12,7 @@ from deepagents.middleware.rubric import RubricMiddleware
 from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
+    SubAgentCompletionContext,
     SubAgentMiddleware,
 )
 from deepagents.profiles.harness.harness_profiles import (
@@ -40,6 +41,7 @@ __all__ = [
     "ProviderProfile",
     "RubricMiddleware",
     "SubAgent",
+    "SubAgentCompletionContext",
     "SubAgentMiddleware",
     "__version__",
     "create_deep_agent",

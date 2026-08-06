@@ -55,6 +55,7 @@ from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
+    SubAgentCompletionContext,
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -272,6 +273,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+    after_subagent_hooks: Sequence[Callable[[SubAgentCompletionContext], None]] = (),
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
@@ -437,6 +439,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
             — the `task` tool is not exposed. Async subagents are independent.
 
+        after_subagent_hooks: Callables invoked with a
+            [`SubAgentCompletionContext`][deepagents.middleware.subagents.SubAgentCompletionContext]
+            after each synchronous `task`/`atask` subagent invocation
+            completes, whether it succeeded or raised. Runs in the parent's
+            runtime, for supervisor-side post-processing (reducers, state
+            projections, audit writes, cache invalidation) without hardcoding
+            `tool_call["name"] == "task"` checks against the built-in tool.
+
+            Exceptions raised by a hook are logged and suppressed; do not use
+            hooks to enforce control flow. No-op when no synchronous subagents
+            are configured (the `task` tool doesn't exist).
         skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
             Paths must be specified using POSIX conventions (forward slashes)
@@ -836,6 +849,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
             state_schema=state_schema,
+            after_subagent_hooks=after_subagent_hooks,
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(

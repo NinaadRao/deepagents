@@ -67,6 +67,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
+    SubAgentCompletionContext,
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import (
@@ -97,6 +98,7 @@ __all__ = [
     "RubricState",
     "SkillsMiddleware",
     "SubAgent",
+    "SubAgentCompletionContext",
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",

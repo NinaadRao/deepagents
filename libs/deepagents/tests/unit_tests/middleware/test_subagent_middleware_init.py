@@ -18,6 +18,7 @@ from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
+    SubAgentCompletionContext,
     SubAgentMiddleware,
     _build_task_tool,
     create_sub_agent,
@@ -507,3 +508,161 @@ class TestSubagentMiddlewareInit:
         )
         # This would error if the middleware was accumulated incorrectly
         assert agent is not None
+
+
+class TestAfterSubagentHooks:
+    """Tests for `after_subagent_hooks` on `SubAgentMiddleware`/`_build_task_tool`."""
+
+    def _task_runtime(self, task_tool: object, tool_call_id: str) -> ToolRuntime:
+        return ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id=tool_call_id,
+            store=None,
+        )
+
+    def test_hook_fires_with_context_on_success(self) -> None:
+        """A successful `task` invocation fires the hook with the subagent's result."""
+        contexts: list[SubAgentCompletionContext] = []
+
+        task_tool = _build_task_tool(
+            [
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda _state, _config=None: {"messages": [AIMessage(content="done")]}),
+                }
+            ],
+            after_subagent_hooks=[contexts.append],
+        )
+        runtime = self._task_runtime(task_tool, "call_1")
+
+        task_tool.func(description="Do work.", subagent_type="worker", runtime=runtime)
+
+        assert len(contexts) == 1
+        ctx = contexts[0]
+        assert ctx["subagent_type"] == "worker"
+        assert ctx["description"] == "Do work."
+        assert ctx["tool_call_id"] == "call_1"
+        assert ctx["result"] == {"messages": [AIMessage(content="done")]}
+        assert ctx["runtime"] is runtime
+        assert "error" not in ctx, "Success path must not populate `error` (NotRequired)"
+
+    def test_hook_fires_with_error_context_and_reraises(self) -> None:
+        """A raising subagent still propagates, and the hook observes the error."""
+        contexts: list[SubAgentCompletionContext] = []
+        boom = RuntimeError("boom")
+
+        task_tool = _build_task_tool(
+            [
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda _state, _config=None: (_ for _ in ()).throw(boom)),
+                }
+            ],
+            after_subagent_hooks=[contexts.append],
+        )
+        runtime = self._task_runtime(task_tool, "call_1")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            task_tool.func(description="Do work.", subagent_type="worker", runtime=runtime)
+
+        assert len(contexts) == 1
+        ctx = contexts[0]
+        assert ctx["result"] is None
+        assert ctx["error"] is boom
+
+    def test_parallel_task_calls_correlate_via_tool_call_id(self) -> None:
+        """Each hook firing carries the distinct `tool_call_id` of its own call."""
+        contexts: list[SubAgentCompletionContext] = []
+
+        task_tool = _build_task_tool(
+            [
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda state, _config=None: {"messages": [AIMessage(content=state["messages"][-1].content)]}),
+                }
+            ],
+            after_subagent_hooks=[contexts.append],
+        )
+
+        task_tool.func(description="First.", subagent_type="worker", runtime=self._task_runtime(task_tool, "call_a"))
+        task_tool.func(description="Second.", subagent_type="worker", runtime=self._task_runtime(task_tool, "call_b"))
+
+        assert [ctx["tool_call_id"] for ctx in contexts] == ["call_a", "call_b"]
+        assert [ctx["description"] for ctx in contexts] == ["First.", "Second."]
+
+    async def test_hook_fires_under_atask(self) -> None:
+        """The async `atask` path fires the same hooks as the sync `task` path."""
+        contexts: list[SubAgentCompletionContext] = []
+
+        task_tool = _build_task_tool(
+            [
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda _state, _config=None: {"messages": [AIMessage(content="done")]}),
+                }
+            ],
+            after_subagent_hooks=[contexts.append],
+        )
+        runtime = self._task_runtime(task_tool, "call_1")
+
+        await task_tool.coroutine(description="Do work.", subagent_type="worker", runtime=runtime)
+
+        assert len(contexts) == 1
+        assert contexts[0]["result"] == {"messages": [AIMessage(content="done")]}
+
+    def test_raising_hook_does_not_break_tool_call(self) -> None:
+        """A hook that raises is logged and suppressed; the tool call still succeeds."""
+
+        def bad_hook(_context: SubAgentCompletionContext) -> None:
+            msg = "hook exploded"
+            raise RuntimeError(msg)
+
+        task_tool = _build_task_tool(
+            [
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda _state, _config=None: {"messages": [AIMessage(content="done")]}),
+                }
+            ],
+            after_subagent_hooks=[bad_hook],
+        )
+        runtime = self._task_runtime(task_tool, "call_1")
+
+        result = task_tool.func(description="Do work.", subagent_type="worker", runtime=runtime)
+
+        assert result.update["messages"][0].content == "done"
+
+    def test_private_state_keys_setter_preserves_hooks(self) -> None:
+        """Rebuilding the task tool via the `private_state_keys` setter keeps hooks wired."""
+        contexts: list[SubAgentCompletionContext] = []
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda _state, _config=None: {"messages": [AIMessage(content="done")]}),
+                }
+            ],
+            after_subagent_hooks=[contexts.append],
+        )
+        middleware.private_state_keys = frozenset({"some_private_key"})
+
+        task_tool = middleware.tools[0]
+        task_tool.func(
+            description="Do work.",
+            subagent_type="worker",
+            runtime=self._task_runtime(task_tool, "call_1"),
+        )
+
+        assert len(contexts) == 1
