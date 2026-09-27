@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +13,9 @@ from deepagents_code.diff_command import (
     render_diff_report,
 )
 from deepagents_code.diff_utils import DIFF_TRUNCATION_MARKER
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _run_git(root: Path, *args: str) -> None:
@@ -96,7 +99,7 @@ class TestBuildDiffReport:
         assert lines[-1] == DIFF_TRUNCATION_MARKER
         # Stats are computed before truncation, so they reflect the real change.
         assert report.stats is not None
-        assert report.stats.deletions == 2  # noqa: PLR2004
+        assert report.stats.deletions == 2
 
 
 class TestRenderDiffReport:

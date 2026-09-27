@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from typing import Final
 
@@ -44,8 +43,10 @@ def _run_git(args: list[str], *, cwd: str) -> tuple[int, str]:
         The process exit code (`1` when git could not even be started or timed
             out) and its captured stdout.
     """
+    import subprocess  # noqa: S404  # stdlib subprocess fallback
+
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603  # trusted argv, no shell
             ["git", *args],  # noqa: S607  # trusted argv, no shell
             capture_output=True,
             text=True,
@@ -64,9 +65,7 @@ def _list_untracked_files(cwd: str) -> tuple[str, ...]:
     if status_code != 0:
         return ()
     return tuple(
-        sorted(
-            entry[3:] for entry in status_out.split("\0") if entry.startswith("?? ")
-        )
+        sorted(entry[3:] for entry in status_out.split("\0") if entry.startswith("?? "))
     )
 
 
