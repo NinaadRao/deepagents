@@ -146,6 +146,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="price spend usage tokens dollars usd",
     ),
     SlashCommand(
+        name="/diff",
+        description="Show uncommitted changes in the working tree",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="git changes uncommitted patch modified",
+    ),
+    SlashCommand(
         name="/force-clear",
         description="Recover a stuck session with a fresh thread",
         bypass_tier=BypassTier.ALWAYS,

@@ -13768,6 +13768,14 @@ class DeepAgentsApp(App):
             AppMessage(self._render_tool_catalog(catalog), markdown=True)
         )
 
+    async def _handle_diff_command(self, command: str) -> None:
+        """Show uncommitted working-tree changes for `/diff`."""
+        from deepagents_code.diff_command import build_diff_report, render_diff_report
+
+        await self._mount_message(UserMessage(command))
+        report = await asyncio.to_thread(build_diff_report, self._cwd)
+        await self._mount_message(AppMessage(render_diff_report(report)))
+
     async def _handle_context_doctor_command(self, command: str) -> None:
         """Audit the estimated token cost of context injected into a session."""
         from pathlib import Path
@@ -17150,6 +17158,8 @@ class DeepAgentsApp(App):
         elif cmd == "/cost":
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(self._format_cost_summary()))
+        elif cmd == "/diff":
+            await self._handle_diff_command(command)
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/extensions":
